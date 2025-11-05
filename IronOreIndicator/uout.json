@@ -25,12 +25,28 @@
       ]
     },
     "export": {
-      "XXX": {
+      "IronOreIndicator": {
         "fields": [
           "_preserved_field",
           "bar_index",
-          "indicator_value",
-          "signal"
+          "ema_12",
+          "ema_26",
+          "ema_50",
+          "macd",
+          "macd_signal",
+          "macd_histogram",
+          "rsi",
+          "bb_upper",
+          "bb_middle",
+          "bb_lower",
+          "bb_width",
+          "bb_width_pct",
+          "atr",
+          "volume_ema",
+          "regime",
+          "signal",
+          "confidence",
+          "position_state"
         ],
         "defs": [
           {
@@ -49,14 +65,126 @@
           },
           {
             "field_type": "double",
-            "display_name": "Indicator Value",
+            "display_name": "EMA 12",
             "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "EMA 26",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "EMA 50",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD Signal",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD Histogram",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "RSI",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Upper",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Middle",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Lower",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Width",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Width Pct",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "ATR",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Volume EMA",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Regime",
+            "precision": 0,
             "sample_type": 0,
             "multiple": 1
           },
           {
             "field_type": "integer",
             "display_name": "Signal",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Confidence",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Position State",
             "precision": 0,
             "sample_type": 0,
             "multiple": 1
