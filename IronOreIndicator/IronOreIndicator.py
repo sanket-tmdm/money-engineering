@@ -96,6 +96,9 @@ class IronOreIndicator(pcts3.sv_object):
         self.confidence = 0.0    # Signal confidence [0.0, 1.0]
         self.indicator_value = 0.0  # Main indicator output (RSI)
 
+        # Position state tracking (0 = flat/out, 1 = in position)
+        self.position_state = 0  # Track if we're in a position
+
         # EMA parameters (alpha = 2 / (period + 1))
         self.alpha_fast = 2.0 / 11.0    # 10-period: 2/(10+1) = 0.1818
         self.alpha_slow = 2.0 / 21.0    # 20-period: 2/(20+1) = 0.0952
@@ -264,10 +267,14 @@ class IronOreIndicator(pcts3.sv_object):
         """
         Generate trading signal based on multi-indicator confirmation
 
-        Signal Logic:
-        - BUY: Uptrend + Oversold + High Volume
-        - SELL: Downtrend + Overbought + High Volume
-        - NEUTRAL: Otherwise
+        State Machine Logic:
+        - BUY signal (1): Only when position_state = 0 (flat)
+        - SELL signal (-1): Only when position_state = 1 (in position)
+        - NEUTRAL (0): When conditions don't align or wrong position state
+
+        Signal Conditions:
+        - BUY: Uptrend + Oversold + High Volume + Flat
+        - SELL: Downtrend + Overbought + High Volume + In Position
 
         Args:
             volume: Current bar volume
@@ -283,17 +290,19 @@ class IronOreIndicator(pcts3.sv_object):
         # Check volume confirmation
         high_volume = volume > (self.volume_ema * self.volume_multiplier)
 
-        # Generate signal with confidence
-        if uptrend and oversold and high_volume:
-            # BUY signal
+        # Generate signal with state machine (alternating buy/sell)
+        if uptrend and oversold and high_volume and self.position_state == 0:
+            # BUY signal (only when flat)
             self.signal = 1
             self.confidence = (30.0 - self.rsi) / 30.0  # Confidence increases as RSI decreases below 30
-        elif downtrend and overbought and high_volume:
-            # SELL signal
+            self.position_state = 1  # Now in position
+        elif downtrend and overbought and high_volume and self.position_state == 1:
+            # SELL signal (only when in position)
             self.signal = -1
             self.confidence = (self.rsi - 70.0) / 30.0  # Confidence increases as RSI increases above 70
+            self.position_state = 0  # Now flat
         else:
-            # NEUTRAL
+            # NEUTRAL (conditions not met or wrong position state)
             self.signal = 0
             self.confidence = 0.0
 
