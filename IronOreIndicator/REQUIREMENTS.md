@@ -299,7 +299,6 @@ python /home/wolverine/bin/running/calculator3_test.py \
 
 **Server Configuration**:
 ```python
-import os
 SVR_HOST = os.getenv("SVR_HOST")  # e.g., "10.99.100.116"
 SVR_TOKEN = os.getenv("SVR_TOKEN")
 RAILS_URL = f"https://{SVR_HOST}:4433/private-api/"
@@ -311,7 +310,6 @@ TM_MASTER = (SVR_HOST, 6102)
 ```python
 import svr3
 import asyncio
-import pandas as pd
 
 async def fetch_data():
     # 1. Create reader
@@ -379,15 +377,13 @@ Algorithm:
 
 **Position Sizing**: 1 contract per signal (can be scaled by confidence)
 
----
-
-## 7. Jupyter Notebook Structure
+### 6.3 Jupyter Notebook Visualization
 
 **File**: `analysis.ipynb`
 
-**Required Cells**:
+**Notebook Cells**:
 
-### Cell 1: Setup
+**Cell 1: Imports and Setup**
 ```python
 import os
 import pandas as pd
@@ -401,13 +397,6 @@ from datetime import datetime
 %matplotlib inline
 sns.set_style("darkgrid")
 
-# Jupyter async support
-try:
-    import nest_asyncio
-    nest_asyncio.apply()
-except ImportError:
-    print("Install: pip install nest-asyncio")
-
 # Load environment
 from dotenv import load_dotenv
 load_dotenv()
@@ -416,68 +405,57 @@ SVR_HOST = os.getenv("SVR_HOST")
 SVR_TOKEN = os.getenv("SVR_TOKEN")
 ```
 
-### Cell 2: Data Fetching
+**Cell 2: Data Fetching**
 ```python
 # Fetch indicator data from svr3 server
-async def fetch_indicator_data():
-    # Use connection sequence from Section 6.1
-    # ...
-    return df
+# (Use connection sequence from Section 6.1)
 
-# Run async fetch
-df = await fetch_indicator_data()
+df = fetch_data()
 print(f"Loaded {len(df)} bars")
 print(f"Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
 df.head()
 ```
 
-### Cell 3: P&L Calculation
+**Cell 3: P&L Calculation**
 ```python
-def calculate_trades(df, entry_threshold=0.6, exit_threshold=0.3):
-    """Calculate trades from signals"""
-    # Use algorithm from Section 6.2
-    # ...
-    return trades
-
-def calculate_cumulative_pnl(trades):
-    """Calculate cumulative P&L"""
-    # ...
-    return cumulative_pnl
+# Calculate trades and P&L
+# (Use algorithm from Section 6.2)
 
 trades = calculate_trades(df)
 df['cumulative_pnl'] = calculate_cumulative_pnl(trades)
+df['drawdown'] = calculate_drawdown(df['cumulative_pnl'])
 
 print(f"Total trades: {len(trades)}")
 print(f"Total P&L: ¥{trades['pnl'].sum():,.2f}")
 ```
 
-### Cell 4: Performance Metrics
+**Cell 4: Performance Metrics**
 ```python
-def calculate_metrics(df, trades):
-    """Calculate performance metrics"""
-    metrics = {
-        'total_trades': len(trades),
-        'win_rate': (trades['pnl'] > 0).sum() / len(trades),
-        'total_pnl': trades['pnl'].sum(),
-        'avg_win': trades[trades['pnl'] > 0]['pnl'].mean(),
-        'avg_loss': trades[trades['pnl'] < 0]['pnl'].mean(),
-        'profit_factor': trades[trades['pnl'] > 0]['pnl'].sum() /
-                        abs(trades[trades['pnl'] < 0]['pnl'].sum()),
-        'sharpe_ratio': (trades['pnl'].mean() / trades['pnl'].std()) * np.sqrt(252),
-        'max_drawdown': calculate_max_drawdown(df['cumulative_pnl'])
-    }
-    return metrics
+# Calculate and display metrics
 
-metrics = calculate_metrics(df, trades)
+metrics = {
+    'total_trades': len(trades),
+    'win_rate': (trades['pnl'] > 0).sum() / len(trades),
+    'total_pnl': trades['pnl'].sum(),
+    'avg_win': trades[trades['pnl'] > 0]['pnl'].mean(),
+    'avg_loss': trades[trades['pnl'] < 0]['pnl'].mean(),
+    'profit_factor': trades[trades['pnl'] > 0]['pnl'].sum() / abs(trades[trades['pnl'] < 0]['pnl'].sum()),
+    'sharpe_ratio': calculate_sharpe(trades),
+    'max_drawdown': df['drawdown'].min()
+}
+
+# Display as formatted table
 pd.DataFrame([metrics]).T.rename(columns={0: 'Value'})
 ```
 
-### Cell 5: P&L Visualization (4 Panels)
+**Cell 5: P&L Curve Visualization**
 ```python
+# Create 4-panel visualization
+
 fig, axes = plt.subplots(4, 1, figsize=(15, 12))
 
 # Panel 1: Cumulative P&L
-axes[0].plot(df['timestamp'], df['cumulative_pnl'], linewidth=2, color='blue')
+axes[0].plot(df['timestamp'], df['cumulative_pnl'], linewidth=2)
 axes[0].set_title('Cumulative P&L', fontsize=14, fontweight='bold')
 axes[0].set_ylabel('P&L (CNY)')
 axes[0].grid(True, alpha=0.3)
@@ -497,8 +475,7 @@ axes[1].legend()
 axes[1].grid(True, alpha=0.3)
 
 # Panel 3: Drawdown
-drawdown = calculate_drawdown(df['cumulative_pnl'])
-axes[2].fill_between(df['timestamp'], 0, drawdown * 100,
+axes[2].fill_between(df['timestamp'], 0, df['drawdown']*100,
                      color='red', alpha=0.3)
 axes[2].set_title('Drawdown', fontsize=14, fontweight='bold')
 axes[2].set_ylabel('Drawdown (%)')
@@ -517,28 +494,29 @@ plt.savefig('pnl_analysis.png', dpi=150, bbox_inches='tight')
 plt.show()
 ```
 
-### Cell 6: Signal Analysis
+**Cell 6: Signal Analysis**
 ```python
 # Analyze signal characteristics
-signal_df = df[df['signal'] != 0].copy()
-signal_analysis = signal_df.groupby('signal').agg({
+
+signal_analysis = df[df['signal'] != 0].groupby('signal').agg({
     'confidence': ['mean', 'std', 'min', 'max'],
     'rsi': 'mean',
+    'ema_fast': 'mean',
     'signal': 'count'
 }).round(4)
 
 signal_analysis
 ```
 
-### Cell 7: Monthly Performance
+**Cell 7: Monthly Performance**
 ```python
-# Monthly P&L breakdown
+# Break down P&L by month
+
 df['month'] = pd.to_datetime(df['timestamp']).dt.to_period('M')
 monthly_pnl = df.groupby('month')['cumulative_pnl'].last().diff()
 
 fig, ax = plt.subplots(figsize=(12, 6))
-colors = ['green' if x > 0 else 'red' for x in monthly_pnl]
-monthly_pnl.plot(kind='bar', ax=ax, color=colors)
+monthly_pnl.plot(kind='bar', ax=ax, color=['green' if x > 0 else 'red' for x in monthly_pnl])
 ax.set_title('Monthly P&L', fontsize=14, fontweight='bold')
 ax.set_ylabel('P&L (CNY)')
 ax.set_xlabel('Month')
@@ -548,11 +526,17 @@ plt.tight_layout()
 plt.show()
 ```
 
+**Required Outputs**:
+1. Interactive plots displayed in notebook
+2. `pnl_analysis.png` saved to disk
+3. Metrics table showing all performance statistics
+4. Monthly breakdown of returns
+
 ---
 
-## 8. Acceptance Criteria
+## 7. Acceptance Criteria
 
-### 8.1 Functional Requirements
+### 7.1 Functional Requirements
 
 - [ ] **Indicator runs successfully**: Processes 1 year of data (2024-01-01 to 2024-12-31)
 - [ ] **Signals generated**: At least 100 signals over the year (both buy and sell)
@@ -560,7 +544,7 @@ plt.show()
 - [ ] **Memory bounded**: No memory growth during backtest (O(1) complexity)
 - [ ] **Data fetching**: Successfully retrieves data from svr3 server
 
-### 8.2 Performance Requirements
+### 7.2 Performance Requirements
 
 - [ ] **Sharpe Ratio**: > 1.0 (risk-adjusted returns)
 - [ ] **Win Rate**: > 50% (more winning trades than losing)
@@ -568,7 +552,15 @@ plt.show()
 - [ ] **Max Drawdown**: < 20% (maximum peak-to-trough decline)
 - [ ] **Total P&L**: Positive over 3-month evaluation period
 
-### 8.3 Visualization Requirements
+### 7.3 Code Quality Requirements
+
+- [ ] **WOS Compliance**: Follows all framework patterns (stateless, sv_object, cycle boundaries)
+- [ ] **Doctrines Applied**: All 4 WOS doctrines followed (see wos/01-overview.md, lines 443-465)
+- [ ] **No Code Smells**: No unbounded memory, no global state, no non-determinism
+- [ ] **Configuration Valid**: uin.json and uout.json pass framework validation
+- [ ] **Documentation**: README.md explains setup, CLAUDE.md has development notes
+
+### 7.4 Visualization Requirements
 
 - [ ] **Jupyter Notebook**: analysis.ipynb runs without errors
 - [ ] **P&L Curve**: 4-panel visualization generated
@@ -578,25 +570,35 @@ plt.show()
 
 ---
 
-## 9. Development Workflow
+## 8. Development Workflow
 
-### 9.1 Setup Phase (30 minutes)
+### 8.1 Setup Phase (30 minutes)
 
 ```bash
 # 1. Navigate to container
 cd IronOreIndicator/
 
-# 2. Create .env file
+# 2. Verify files exist
+ls -la  # Should see: uin.json, uout.json, IronOreIndicator.py, etc.
+
+# 3. Create .env file
 cat > .env << EOF
 SVR_HOST=10.99.100.116
 SVR_TOKEN=your_token_here
 EOF
 
-# 3. Verify existing files
-ls -la  # Should see: uin.json, uout.json, IronOreIndicator.py, etc.
+# 4. Verify WOS documentation access
+ls -la wos/  # Should see symlink to ../wos/
 ```
 
-### 9.2 Testing Phase (1 hour)
+### 8.2 Implementation Phase (2-3 hours)
+
+1. **Review existing code**: IronOreIndicator/IronOreIndicator.py
+2. **Verify configuration**: uin.json, uout.json
+3. **Implement indicator logic**: Follow Section 3 (Algorithm) and Section 4 (Patterns)
+4. **Add logging**: Use `logger.info()` for signal generation
+
+### 8.3 Testing Phase (1 hour)
 
 ```bash
 # 1. Quick test (7 days)
@@ -614,10 +616,11 @@ python /home/wolverine/bin/running/calculator3_test.py \
 # 2. Replay consistency (MANDATORY)
 python test_resuming_mode.py
 
-# 3. Full backtest (1 year) - adjust dates to 20240101-20241231
+# 3. Full backtest (1 year)
+# (Use command from Section 5.2, adjust dates to 20240101-20241231)
 ```
 
-### 9.3 Visualization Phase (1 hour)
+### 8.4 Visualization Phase (1 hour)
 
 ```bash
 # 1. Create Jupyter notebook
@@ -625,262 +628,107 @@ jupyter notebook analysis.ipynb
 
 # 2. Execute all cells sequentially
 # 3. Verify P&L curve generated
-# 4. Export to HTML
+# 4. Export notebook to HTML for sharing
 jupyter nbconvert --to html analysis.ipynb
+```
+
+### 8.5 Validation Phase (30 minutes)
+
+```bash
+# 1. Check all acceptance criteria (Section 7)
+# 2. Review performance metrics
+# 3. Verify replay consistency test passed
+# 4. Confirm P&L curve shows reasonable results
+# 5. Document any issues in CLAUDE.md
 ```
 
 **Total Time**: ~4-6 hours
 
 ---
 
-## 10. Reference Materials
+## 9. Reference Materials
 
-### 10.1 WOS Framework Documentation
+### 9.1 WOS Framework Documentation
 
-**Location**: `wos/` directory
+**Location**: `wos/` directory (symlinked from IronOreIndicator/)
 
 **Key Chapters**:
+- `01-overview.md` - Framework architecture and doctrines
+- `02-uin-and-uout.md` - Configuration file specifications
+- `03-programming-basics-and-cli.md` - Module structure and callbacks
+- `04-structvalue-and-sv_object.md` - Data serialization patterns
 - `05-stateless-design.md` - Online algorithms and replay consistency
 - `06-backtest.md` - Testing procedures
 - `07-tier1-indicator.md` - Tier-1 indicator patterns
 - `10-visualization.md` - Data fetching and plotting
 
-### 10.2 Existing Files
+### 9.2 Templates
 
-- `IronOreIndicator.py` - Working indicator
-- `ironoreindicator_viz.py` - Python visualization (convert to notebook)
+**Location**: `../templates/`
+
+- `indicator.py.template` - Base indicator structure
+- `indicator_viz.py.template` - Visualization script template
+- `test_resuming_mode.py.template` - Replay test template
+- `launch.json.template` - VS Code debug configuration
+
+### 9.3 Existing Implementation
+
+**Location**: `IronOreIndicator/`
+
+- `IronOreIndicator.py` - Working indicator (may need updates)
+- `ironoreindicator_viz.py` - Python visualization script (convert to notebook)
 - `uin.json`, `uout.json` - Configuration files
+- `CLAUDE.md` - Development notes
+
+### 9.4 External Documentation
+
+- **svr3 API**: Connection patterns in wos/10-visualization.md
+- **Jupyter Notebooks**: https://jupyter.org/documentation
+- **pandas**: https://pandas.pydata.org/docs/
+- **matplotlib**: https://matplotlib.org/stable/contents.html
 
 ---
 
-## 11. Implementation Guide (What Was Done)
+## 10. Troubleshooting
 
-### 11.1 Indicator Implementation
+### 10.1 Common Issues
 
-**File**: `IronOreIndicator.py`
+**Issue**: Replay consistency test fails
 
-**What was implemented**:
+**Solution**: Check for non-deterministic code (random, time-based), verify all state variables persisted, ensure from_sv()/copy_to_sv() symmetry
 
-1. **Multi-Indicator System**: EMA Crossover + RSI + Volume Confirmation
-   - All indicators use online algorithms (O(1) memory)
-   - State is auto-persisted via `sv_object` pattern
+**Issue**: No signals generated
 
-2. **Signal Generation**:
-   - BUY: Uptrend + Oversold (RSI < 30) + High Volume
-   - SELL: Downtrend + Overbought (RSI > 70) + High Volume
-   - NEUTRAL: All other cases
+**Solution**: Check threshold values too strict (RSI < 30, RSI > 70), verify confidence calculation, add debug logging
 
-3. **Key State Variables**:
-   ```python
-   # EMA state
-   self.ema_fast = 0.0      # 10-period
-   self.ema_slow = 0.0      # 20-period
-   self.volume_ema = 0.0    # 20-period
+**Issue**: Memory grows during backtest
 
-   # RSI state (online algorithm)
-   self.rsi = 50.0
-   self.gain_ema = 0.0
-   self.loss_ema = 0.0
-   self.prev_close = 0.0
+**Solution**: Replace unbounded lists with online algorithms (EMA) or bounded deques (maxlen parameter)
 
-   # Output
-   self.signal = 0          # -1, 0, 1
-   self.confidence = 0.0    # 0.0 to 1.0
-   self.indicator_value = 0.0  # RSI value (exported to uout.json)
-   ```
+**Issue**: svr3 connection fails
 
-4. **Critical Fix Applied**:
-   - **Problem**: `AttributeError: 'IronOreIndicator' object has no attribute 'indicator_value'`
-   - **Root Cause**: `uout.json` specified `indicator_value` field, but it wasn't defined in the class
-   - **Solution**: Added `self.indicator_value = 0.0` in `__init__()`, updated in `_on_cycle_pass()`, initialized in `_initialize_state()`
-   - **Location**: Lines 97, 221, 256 in IronOreIndicator.py
+**Solution**: Verify SVR_TOKEN in .env, check connection sequence order (Section 6.1), confirm server accessible
 
-### 11.2 Output Configuration
+**Issue**: Jupyter notebook won't load data
 
-**File**: `uout.json`
+**Solution**: Ensure nest_asyncio installed (`pip install nest-asyncio`), verify async fetch function runs correctly
 
-**Exported Fields**:
-```json
-{
-  "fields": [
-    "_preserved_field",  // Framework-required timestamp
-    "bar_index",        // Bar counter
-    "indicator_value",  // RSI value (0-100) ← REQUIRED FOR SERIALIZATION
-    "signal"            // Trading signal (-1, 0, 1)
-  ]
-}
-```
-
-**Important**: ALL fields in `uout.json` MUST exist as attributes in the indicator class, or serialization will fail.
-
-### 11.3 Visualization Options
-
-You now have **TWO notebooks**:
-
-#### Option A: `analysis.ipynb` (COMPREHENSIVE)
-
-**Purpose**: Production-level P&L analysis with advanced metrics
-
-**Features**:
-- Fetches indicator data from svr3 server (private namespace)
-- Calculates trades based on signal confidence thresholds
-- Computes comprehensive metrics:
-  - Win rate, Sharpe ratio, profit factor
-  - Max drawdown, avg win/loss
-  - Monthly breakdown
-- 4-panel visualization:
-  1. Cumulative P&L curve
-  2. Price + Buy/Sell signals
-  3. Drawdown chart
-  4. Trade P&L distribution histogram
-- Signal analysis (RSI distribution, confidence levels)
-- Acceptance criteria evaluation
-
-**Use when**: You want full production analysis with detailed metrics
-
-**Current Status**: ⚠️ Not working yet - needs data from full backtest
-
-#### Option B: `trading_simulation.ipynb` (SIMPLE $1000 SIMULATION)
-
-**Purpose**: Simple portfolio simulation starting with $1000
-
-**Features**:
-- Fetches BOTH indicator signals AND price data
-- Simulates actual trading:
-  - Start with $1000 cash
-  - Buy on signal=1, Sell on signal=-1
-  - Tracks position, cash, portfolio value
-- Calculates basic metrics:
-  - Total return, max drawdown
-  - Sharpe ratio, win rate
-- 4-panel visualization:
-  1. Portfolio value over time
-  2. Cumulative P&L
-  3. Position + trading signals
-  4. RSI indicator
-
-**Use when**: You want to see "what if I invested $1000"
-
-**Current Status**: ✓ Ready to use after quick test completes
-
-### 11.4 Quick Test vs Full Backtest
-
-**QUESTION: Do I need full backtest or is quick test enough?**
-
-**ANSWER**: It depends on your goal:
-
-#### Quick Test (7 days) - **GOOD FOR NOW**
+### 10.2 Debugging Commands
 
 ```bash
-# Already in .vscode/launch.json
-# Press F5 → Select "IronOreIndicator - Quick Test"
-# OR run manually:
-python calculator3_test.py --start 20241025000000 --end 20241101000000 ...
+# Check configuration validity
+python -c "import json; print(json.load(open('uin.json')))"
+
+# Verify environment variables
+echo $SVR_HOST
+echo $SVR_TOKEN
+
+# Test svr3 connectivity
+python -c "import svr3; print(svr3.__version__)"
+
+# Check indicator imports
+python -c "import IronOreIndicator; print('OK')"
 ```
-
-**Duration**: 7 days (2024-10-25 to 2024-11-01)
-**Bars**: ~672 bars (96 bars/day × 7 days)
-**Time**: 30-60 seconds
-**Memory**: Minimal
-
-**Purpose**:
-- ✅ Verify indicator works without errors
-- ✅ Generate some signals to visualize
-- ✅ Quick iteration during development
-- ✅ Test indicator logic is correct
-
-**Limitations**:
-- ❌ Not enough data for statistical significance
-- ❌ Can't evaluate long-term performance
-- ❌ May not capture all market conditions
-
-**VERDICT**: **Use this for now** to see if your signals make sense and the notebook works.
-
-#### Full Backtest (1 year) - **REQUIRED FOR PRODUCTION**
-
-```bash
-# Press F5 → Select "IronOreIndicator - Full Backtest"
-# Dates: 20240101000000 to 20241231235959
-```
-
-**Duration**: 1 year (365 days)
-**Bars**: ~24,000 bars (96 bars/day × 250 trading days)
-**Time**: 5-15 minutes
-**Memory**: Still O(1) due to online algorithms
-
-**Purpose**:
-- ✅ Statistically significant results
-- ✅ Capture all market conditions (bull, bear, sideways)
-- ✅ Reliable performance metrics
-- ✅ Required before production deployment
-
-**When to run**:
-- After quick test passes
-- After you're happy with signal logic
-- Before optimizing parameters
-- Before going live
-
-**VERDICT**: **Run this later** after you've verified the basic logic works.
-
-#### Replay Consistency Test - **MANDATORY BEFORE PRODUCTION**
-
-```bash
-python test_resuming_mode.py
-```
-
-**Purpose**: Verify determinism (stateless design)
-**Must pass**: Before any production deployment
-**When to run**: After full backtest passes
-
-### 11.5 Recommended Workflow
-
-**Right now** (for your question about P&L):
-
-1. ✅ **Quick test is enough** - You already ran it successfully
-2. ✅ **Use `trading_simulation.ipynb`** - Shows $1000 portfolio simulation
-3. Run the notebook cells to see your P&L curve
-
-**Steps**:
-```bash
-# 1. Set environment variables
-export SVR_HOST="10.99.100.116"
-export SVR_TOKEN="your_token_here"
-
-# 2. Open notebook
-jupyter notebook trading_simulation.ipynb
-# OR open in VS Code
-
-# 3. Run all cells
-# You'll see:
-# - Portfolio value curve
-# - Total P&L
-# - Win rate
-# - Sharpe ratio
-# - All metrics
-```
-
-**Later** (before production):
-
-1. ⏳ Run full backtest (1 year)
-2. ⏳ Run replay consistency test
-3. ⏳ Use `analysis.ipynb` for comprehensive analysis
-4. ⏳ Optimize parameters based on results
-5. ⏳ Deploy to production
-
-### 11.6 Summary: Two Notebooks Explained
-
-| Feature | `trading_simulation.ipynb` | `analysis.ipynb` |
-|---------|---------------------------|------------------|
-| **Purpose** | Simple $1000 portfolio sim | Production P&L analysis |
-| **Fetches** | Signals + Prices | Signals only |
-| **Trading** | Buy/sell with cash tracking | Confidence-based entries |
-| **Metrics** | Basic (return, Sharpe, DD) | Advanced (profit factor, monthly) |
-| **Panels** | 4 (portfolio, P&L, position, RSI) | 4 (P&L, price+signals, DD, histogram) |
-| **Use Case** | "What if I invested $1000?" | "Is this strategy profitable?" |
-| **Status** | ✓ Ready now | ⚠️ Needs full backtest data |
-| **Best For** | Quick feedback, education | Production evaluation |
-
-**RECOMMENDATION**: Use `trading_simulation.ipynb` now to see your P&L from the quick test. Switch to `analysis.ipynb` later when you run the full backtest.
 
 ---
 
@@ -893,16 +741,20 @@ jupyter notebook trading_simulation.ipynb
 4. Jupyter notebook visualization with real svr3 data
 5. All deliverables in IronOreIndicator/ container
 
-**What was actually implemented**:
-1. ✅ Multi-indicator system (EMA + RSI + Volume)
-2. ✅ Quick test passing (7 days)
-3. ✅ Two Jupyter notebooks for P&L visualization
-4. ✅ Fixed serialization bug (`indicator_value` attribute)
-5. ⏳ Full backtest pending (run when ready)
-6. ⏳ Replay consistency test pending
-
 **Expected Timeline**: 4-6 hours total
 
 **Framework**: Follows WOS patterns (referenced, not duplicated)
 
-**Success Criteria**: Section 8 (all checkboxes must pass)
+**Target Users**: AI agents and developers
+
+**Success Criteria**: Section 7 (all checkboxes must pass)
+
+---
+
+**Next Steps for AI Agent**:
+1. Read this requirements document
+2. Review referenced WOS chapters for implementation patterns
+3. Implement/update IronOreIndicator.py following Section 3-4
+4. Run tests following Section 5
+5. Create analysis.ipynb following Section 6.3
+6. Validate against Section 7 acceptance criteria
