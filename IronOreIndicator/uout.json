@@ -46,6 +46,9 @@
           "regime",
           "signal",
           "confidence",
+          "signal_strength",
+          "desired_contracts",
+          "contracts_to_add",
           "position_state",
           "cash",
           "contracts_held",
@@ -182,6 +185,27 @@
             "field_type": "double",
             "display_name": "Confidence",
             "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Signal Strength",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Desired Contracts",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Contracts To Add",
+            "precision": 0,
             "sample_type": 0,
             "multiple": 1
           },

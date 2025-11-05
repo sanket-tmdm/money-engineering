@@ -156,6 +156,11 @@ class IronOreIndicator(pcts3.sv_object):
         self.last_exit_bar = -999  # Track last exit to prevent immediate re-entry
         self.cooldown_bars = 1   # Minimum bars to wait after exit (short-term focused)
 
+        # NEW: Position accumulation fields
+        self.signal_strength = 0.0    # 0.0-1.0 conviction level
+        self.desired_contracts = 0    # Target position size
+        self.contracts_to_add = 0     # Contracts to add this signal (50 or 100)
+
         # Portfolio tracking (simulation with $1,000,000 initial capital)
         self.initial_capital = 1000000.0  # Starting capital (CNY)
         self.cash = 1000000.0             # Current cash
@@ -526,11 +531,18 @@ class IronOreIndicator(pcts3.sv_object):
 
     def _generate_signal(self):
         """
-        Master signal generation logic - LONG ONLY WITH POSITION ACCUMULATION
-        Sets: self.signal, self.confidence
+        IMPROVED: Intelligent Position Accumulation with Aggressive Dip Buying
 
-        Signal=1: ADD 50 contracts (up to 70% portfolio limit)
-        Signal=-1: CLOSE ALL positions (take profit or cut loss)
+        Key Features:
+        - Calculate signal strength (0.0-1.0) from multi-factor analysis
+        - Easier thresholds for adding to existing positions (2/5 vs 3/5)
+        - Aggressive dip buying: 100 contracts on strong dips (RSI < 35)
+        - Standard buying: 50 contracts on medium dips (RSI < 45)
+        - Exit only on CLEAR reversals (not minor weakness)
+        - Track desired_contracts and contracts_to_add for visibility
+
+        Signal=1: ADD contracts (50 or 100 based on dip strength)
+        Signal=-1: CLOSE ALL positions (clear reversal detected)
         Signal=0: HOLD current state
         """
 
@@ -540,78 +552,98 @@ class IronOreIndicator(pcts3.sv_object):
         else:
             self.position_state = 0
 
-        # Calculate current allocation percentage
+        # Calculate current allocation
         current_position_value = self.contracts_held * self.close
         self.portfolio_value = self.cash + current_position_value
         current_allocation = current_position_value / self.portfolio_value if self.portfolio_value > 0 else 0
 
-        # Calculate if we can add 50 more contracts (70% limit check)
-        proposed_position_value = (self.contracts_held + self.contracts_per_trade) * self.close
+        # Calculate SIGNAL STRENGTH from multiple factors
+        self._calculate_signal_strength()
+
+        # Determine contracts to add (based on dip strength)
+        if self.rsi < 35:
+            # STRONG dip - aggressive buying
+            self.contracts_to_add = 100
+        elif self.rsi < 45:
+            # MEDIUM dip - standard buying
+            self.contracts_to_add = 50
+        else:
+            # NO dip - standard entry
+            self.contracts_to_add = 50
+
+        # Check if we can add contracts (70% limit + cash check)
+        proposed_position_value = (self.contracts_held + self.contracts_to_add) * self.close
         proposed_allocation = proposed_position_value / self.portfolio_value if self.portfolio_value > 0 else 0
-        can_add_position = proposed_allocation <= self.max_allocation and self.cash >= (self.contracts_per_trade * self.close)
+        can_add_position = (proposed_allocation <= self.max_allocation and
+                           self.cash >= (self.contracts_to_add * self.close))
+
+        # Update desired_contracts for tracking
+        if self.position_state == 1 and can_add_position:
+            self.desired_contracts = self.contracts_held + self.contracts_to_add
+        elif can_add_position:
+            self.desired_contracts = self.contracts_to_add
+        else:
+            self.desired_contracts = self.contracts_held
 
         # Priority 1: Check chaos regime (force exits if in position)
         if self.regime == 4:
             if self.position_state == 1:
-                self.signal = -1
-                self.confidence = 1.0
-                self.last_exit_bar = self.bar_index
-                return
-            # If flat, allow buying if chaos is calming down
-            # Fall through to check entry conditions
+                # Only exit chaos if CLEAR danger signals
+                if self._check_chaos_force_exit():
+                    self.signal = -1
+                    self.confidence = 1.0
+                    self.signal_strength = 0.0
+                    self.last_exit_bar = self.bar_index
+                    return
 
-        # Check cooldown period (only after FULL exit to flat)
+        # Check cooldown (only when flat)
         bars_since_exit = self.bar_index - self.last_exit_bar
         in_cooldown = (bars_since_exit < self.cooldown_bars) and (self.position_state == 0)
 
-        # Priority 2: Check EXIT conditions FIRST (any regime)
+        # Priority 2: Check EXIT conditions (STRICTER - only clear reversals)
         if self.position_state == 1:
-            # Check for exits in any regime
             should_exit = False
 
-            if self.regime == 1:  # Uptrend exit
-                if self._check_uptrend_exit():
+            if self.regime == 1:  # Uptrend - hold through noise
+                if self._check_uptrend_exit_strict():
                     should_exit = True
 
-            elif self.regime == 2:  # Downtrend - aggressive exit
-                if self._check_downtrend_exit():
+            elif self.regime == 2:  # Downtrend - exit on continuation
+                if self._check_downtrend_exit_strict():
                     should_exit = True
 
-            elif self.regime == 3:  # Ranging exit (take profit)
-                if self._check_ranging_sell():
+            elif self.regime == 3:  # Ranging - exit on clear weakness
+                if self._check_ranging_exit_strict():
                     should_exit = True
 
             if should_exit:
                 self.signal = -1
                 self.confidence = 0.8
+                self.signal_strength = 0.0
                 self.last_exit_bar = self.bar_index
                 return
 
-        # Priority 3: Check BUY conditions (ADD to position or START position)
-        # Can buy if: (1) not in cooldown AND (2) under 70% allocation limit
-
-        # Debug logging for blocked buys (only every 50 bars if flat)
-        if self.position_state == 0 and self.bar_index % 50 == 0:
-            if in_cooldown:
-                logger.debug(f"Bar {self.bar_index}: Cannot buy - in cooldown (last_exit={self.last_exit_bar})")
-            elif not can_add_position:
-                logger.debug(f"Bar {self.bar_index}: Cannot buy - allocation limit (current={current_allocation:.1%}, proposed={proposed_allocation:.1%})")
-            elif self.regime == 2:
-                logger.debug(f"Bar {self.bar_index}: Cannot buy - regime 2, checking reversal signals")
-            elif self.regime == 4:
-                logger.debug(f"Bar {self.bar_index}: Cannot buy - regime 4, checking recovery signals")
-
+        # Priority 3: Check BUY conditions with EASIER thresholds when in position
         if not in_cooldown and can_add_position:
 
-            if self.regime == 1:  # Strong Uptrend - buy dips
-                if self._check_uptrend_buy():
+            # Determine required score based on position state
+            if self.position_state == 1:
+                # EASIER: Only need 2/5 to add to existing position
+                required_score_entry = 2
+            else:
+                # INITIAL: Need 3/5 for first entry
+                required_score_entry = 3
+
+            if self.regime == 1:  # Strong Uptrend - buy dips aggressively
+                buy_score = self._calculate_uptrend_buy_score()
+                if buy_score >= required_score_entry:
                     self.signal = 1
-                    # Confidence based on relaxed RSI (40 instead of 30)
-                    self.confidence = max(0.0, min(1.0, (40.0 - self.rsi) / 40.0))
+                    self.confidence = max(0.0, min(1.0, (45.0 - self.rsi) / 45.0))
                     return
 
-            elif self.regime == 3:  # Sideways/Ranging - buy dips
-                if self._check_ranging_buy():
+            elif self.regime == 3:  # Ranging - buy dips
+                buy_score = self._calculate_ranging_buy_score()
+                if buy_score >= required_score_entry:
                     self.signal = 1
                     bb_range = self.bb_upper - self.bb_lower
                     if bb_range > 0:
@@ -621,32 +653,75 @@ class IronOreIndicator(pcts3.sv_object):
                         self.confidence = 0.5
                     return
 
-            # Regime 2 (Downtrend) - allow reversal buys
-            elif self.regime == 2:
-                # Allow re-entry in downtrend if showing reversal signs
-                if self._check_downtrend_reversal_buy():
+            elif self.regime == 2:  # Downtrend - reversal buys
+                buy_score = self._calculate_downtrend_reversal_score()
+                if buy_score >= required_score_entry:
                     self.signal = 1
-                    self.confidence = 0.6  # Lower confidence for downtrend buys
+                    self.confidence = 0.6
                     return
 
-            # Regime 4 (Chaos) - allow buying if volatility calming down
-            elif self.regime == 4:
-                # Allow cautious buys when chaos is settling
-                if self._check_chaos_recovery_buy():
+            elif self.regime == 4:  # Chaos - recovery buys
+                buy_score = self._calculate_chaos_recovery_score()
+                if buy_score >= required_score_entry:
                     self.signal = 1
-                    self.confidence = 0.5  # Low confidence for chaos buys
+                    self.confidence = 0.5
                     return
 
-        # Default: No signal (HOLD)
+        # Default: HOLD
         self.signal = 0
         self.confidence = 0.0
 
-    def _check_uptrend_buy(self):
-        """Generate BUY in uptrend regime (relaxed conditions)"""
-        # Score-based confirmation (need 3 out of 5 points)
+    def _calculate_signal_strength(self):
+        """
+        Calculate signal strength (0.0-1.0) from multiple factors:
+        - RSI distance from extremes
+        - MACD strength
+        - Trend alignment
+        - BB position
+        """
+        strength = 0.0
+        count = 0
+
+        # Factor 1: RSI strength (how oversold/overbought)
+        if self.rsi < 50:
+            # Oversold = bullish
+            rsi_strength = (50.0 - self.rsi) / 50.0  # 0-1
+            strength += rsi_strength
+            count += 1
+
+        # Factor 2: MACD strength
+        if self.macd > self.macd_signal:
+            # Positive histogram
+            macd_strength = min(abs(self.macd_histogram) / 10.0, 1.0)
+            strength += macd_strength
+            count += 1
+
+        # Factor 3: Trend alignment (EMA 12 vs 26)
+        if self.ema_12 > self.ema_26:
+            ema_distance = (self.ema_12 / self.ema_26 - 1.0) * 100  # Percentage
+            trend_strength = min(abs(ema_distance) / 2.0, 1.0)  # Normalize
+            strength += trend_strength
+            count += 1
+
+        # Factor 4: BB position (distance from middle)
+        bb_range = self.bb_upper - self.bb_lower
+        if bb_range > 0:
+            distance_from_middle = abs(self.bb_middle - self.close)
+            bb_strength = min(distance_from_middle / bb_range, 1.0)
+            strength += bb_strength
+            count += 1
+
+        # Average the strength
+        if count > 0:
+            self.signal_strength = strength / count
+        else:
+            self.signal_strength = 0.0
+
+    def _calculate_uptrend_buy_score(self):
+        """Calculate BUY score for uptrend (returns 0-5)"""
         score = 0
 
-        # 1. Trend aligned (partial alignment ok)
+        # 1. Trend aligned
         if self.ema_12 > self.ema_26:
             score += 1
 
@@ -654,49 +729,47 @@ class IronOreIndicator(pcts3.sv_object):
         if self.macd > self.macd_signal:
             score += 1
 
-        # 3. RSI shows pullback (relaxed from 30 to 40)
-        if self.rsi < 40:
+        # 3. RSI shows dip (increased from 40 to 50 for more opportunities)
+        if self.rsi < 50:
             score += 1
 
-        # 4. Volume confirmation (relaxed from 1.5x to 1.2x)
-        if self.volume > (self.volume_ema * 1.2):
+        # 4. Volume confirmation (relaxed to 1.1x)
+        if self.volume > (self.volume_ema * 1.1):
             score += 1
 
-        # 5. Price near lower band (within 20% of band width)
+        # 5. Price showing dip (within 30% of band width from lower)
         bb_range = self.bb_upper - self.bb_lower
-        if bb_range > 0 and self.close <= (self.bb_lower + bb_range * 0.2):
+        if bb_range > 0 and self.close <= (self.bb_lower + bb_range * 0.3):
             score += 1
 
-        return score >= 3
+        return score
 
-    def _check_uptrend_exit(self):
-        """Exit long position in uptrend - take profits on weakness"""
-        # Short-term focused - take profits faster (need 2 out of 4)
+    def _check_uptrend_exit_strict(self):
+        """STRICTER uptrend exit - only clear reversals (need 3/4)"""
         exit_score = 0
 
-        # 1. RSI overbought
-        if self.rsi > 60:  # Relaxed from 65 for faster profit taking
+        # 1. RSI very overbought
+        if self.rsi > 65:  # Stricter threshold
             exit_score += 1
 
-        # 2. MACD momentum turning down
-        if self.macd < self.macd_signal:  # Bearish cross
+        # 2. MACD clear bearish cross
+        if self.macd < self.macd_signal and self.macd_histogram < -0.5:
             exit_score += 1
 
-        # 3. Price below short-term EMA
-        if self.close < self.ema_12:  # Below short-term trend
+        # 3. Price breaks below BOTH short EMAs
+        if self.close < self.ema_12 and self.close < self.ema_26:
             exit_score += 1
 
-        # 4. Price showing weakness (close in lower 40% of bar)
+        # 4. Price showing clear weakness (close in bottom 30%)
         if self.high > self.low:
             bar_position = (self.close - self.low) / (self.high - self.low)
-            if bar_position < 0.4:  # Weak close
+            if bar_position < 0.3:
                 exit_score += 1
 
-        return exit_score >= 2
+        return exit_score >= 3  # Need 3/4 for exit
 
-    def _check_downtrend_exit(self):
-        """Exit long position in downtrend - close longs in bearish conditions"""
-        # In downtrend, exit longs aggressively with just 1 confirmation
+    def _check_downtrend_exit_strict(self):
+        """STRICTER downtrend exit - confirmed downtrend continuation (need 2/3)"""
         exit_score = 0
 
         if self.ema_12 < self.ema_26:  # Bearish trend
@@ -705,95 +778,105 @@ class IronOreIndicator(pcts3.sv_object):
         if self.macd < self.macd_signal:  # Bearish momentum
             exit_score += 1
 
-        if self.close < self.bb_middle:  # Price weakness
+        if self.close < self.bb_lower:  # Price very weak (not just middle)
             exit_score += 1
 
-        return exit_score >= 1  # Exit on any downtrend signal
+        return exit_score >= 2  # Need 2/3 to exit
 
-    def _check_downtrend_reversal_buy(self):
-        """
-        Allow buys in downtrend if showing reversal signals
-        Short-term focused - catch quick bounces
-        """
-        # Relaxed conditions - need 3 out of 6 for reversal trade
+    def _calculate_downtrend_reversal_score(self):
+        """Calculate reversal BUY score in downtrend (returns 0-6)"""
         score = 0
 
-        # 1. EMA12 crossing above EMA26 (golden cross starting)
-        if self.ema_12 > self.ema_26:  # Trend reversing
+        # 1. EMA12 crossing above EMA26 (reversal signal)
+        if self.ema_12 > self.ema_26:
             score += 1
 
-        # 2. MACD showing bullish momentum (crossing or above signal)
-        if self.macd > self.macd_signal:  # Bullish momentum
+        # 2. MACD bullish
+        if self.macd > self.macd_signal:
             score += 1
 
-        # 3. RSI oversold and recovering (under 40)
-        if self.rsi < 40:  # Oversold, ready to bounce
+        # 3. RSI oversold (increased to 45 for more opportunities)
+        if self.rsi < 45:
             score += 1
 
-        # 4. Price near or at lower BB (oversold)
+        # 4. Price at lower BB (oversold)
         bb_range = self.bb_upper - self.bb_lower
         if bb_range > 0 and self.close <= (self.bb_lower + bb_range * 0.3):
             score += 1
 
-        # 5. Volume confirmation (showing interest)
+        # 5. Volume confirmation
         if self.volume > (self.volume_ema * 1.1):
             score += 1
 
-        # 6. Price action showing bounce (close in upper 50% of bar)
+        # 6. Price action showing bounce
         if self.high > self.low:
             bar_position = (self.close - self.low) / (self.high - self.low)
-            if bar_position > 0.5:  # Close in upper half
+            if bar_position > 0.5:
                 score += 1
 
-        return score >= 3  # Relaxed: need 3/6 for downtrend buy
+        return score
 
-    def _check_chaos_recovery_buy(self):
-        """
-        Allow buys in chaos regime if volatility is calming and showing opportunity
-        Short-term scalping - catch quick moves
-        """
-        # Need 3 out of 5 conditions to buy in chaos
+    def _calculate_chaos_recovery_score(self):
+        """Calculate chaos recovery BUY score (returns 0-5)"""
         score = 0
 
-        # 1. Volatility decreasing (ATR trending down)
-        if self.atr < self.mean_atr * 1.3:  # Still high but calming
+        # 1. Volatility calming
+        if self.atr < self.mean_atr * 1.3:
             score += 1
 
-        # 2. Price showing direction (EMA12 vs EMA26)
-        if self.ema_12 > self.ema_26:  # Bullish bias
+        # 2. Trend direction emerging
+        if self.ema_12 > self.ema_26:
             score += 1
 
-        # 3. RSI in tradable zone (not extreme)
-        if 25 < self.rsi < 45:  # Slightly oversold but not extreme
+        # 3. RSI in tradable zone (widened from 25-45 to 25-50)
+        if 25 < self.rsi < 50:
             score += 1
 
-        # 4. MACD showing momentum
-        if self.macd > self.macd_signal:  # Bullish momentum
+        # 4. MACD momentum
+        if self.macd > self.macd_signal:
             score += 1
 
-        # 5. Price action - close in upper part of bar
+        # 5. Price action strength
         if self.high > self.low:
             bar_position = (self.close - self.low) / (self.high - self.low)
-            if bar_position > 0.6:  # Strong close
+            if bar_position > 0.6:
                 score += 1
 
-        return score >= 3  # Need 3/5 to buy in chaos
+        return score
 
-    def _check_ranging_buy(self):
-        """Generate BUY in ranging regime (relaxed conditions)"""
-        # Score-based mean reversion (need 2 out of 4 points)
+    def _check_chaos_force_exit(self):
+        """Check if chaos is dangerous enough to force exit"""
+        # Only exit if REALLY dangerous (need 3/4)
+        danger_score = 0
+
+        if self.atr > self.mean_atr * 2.0:  # Extreme volatility
+            danger_score += 1
+
+        if self.bb_width_pct > 6.0:  # Extreme BB expansion
+            danger_score += 1
+
+        if self.close < self.bb_lower:  # Price collapsing
+            danger_score += 1
+
+        if self.macd_histogram < -1.0:  # Strong negative momentum
+            danger_score += 1
+
+        return danger_score >= 3
+
+    def _calculate_ranging_buy_score(self):
+        """Calculate ranging BUY score (returns 0-4)"""
         score = 0
 
-        # 1. Near lower band (within 30% of band width)
+        # 1. Near lower band (widened to 40%)
         bb_range = self.bb_upper - self.bb_lower
-        if bb_range > 0 and self.close <= (self.bb_lower + bb_range * 0.3):
+        if bb_range > 0 and self.close <= (self.bb_lower + bb_range * 0.4):
             score += 1
 
-        # 2. RSI shows oversold (relaxed from 30 to 40)
-        if self.rsi < 40:
+        # 2. RSI shows dip (increased to 50)
+        if self.rsi < 50:
             score += 1
 
-        # 3. Volume confirmation (relaxed from 1.2x to 1.1x)
+        # 3. Volume confirmation (relaxed)
         if self.volume > (self.volume_ema * 1.1):
             score += 1
 
@@ -801,38 +884,37 @@ class IronOreIndicator(pcts3.sv_object):
         if self.close > self.low:
             score += 1
 
-        return score >= 2
+        return score
 
-    def _check_ranging_sell(self):
-        """Exit long in ranging regime - take quick profits"""
-        # Score-based exit (need 2 out of 4 for faster profit taking)
+    def _check_ranging_exit_strict(self):
+        """STRICTER ranging exit - clear weakness (need 3/4)"""
         score = 0
 
-        # 1. Price near upper band (within 30% - relaxed for faster exits)
+        # 1. Price near upper band (tightened to 20%)
         bb_range = self.bb_upper - self.bb_lower
-        if bb_range > 0 and self.close >= (self.bb_upper - bb_range * 0.3):
+        if bb_range > 0 and self.close >= (self.bb_upper - bb_range * 0.2):
             score += 1
 
-        # 2. RSI overbought (relaxed threshold)
-        if self.rsi > 60:  # Relaxed from 65
+        # 2. RSI very overbought
+        if self.rsi > 65:  # Stricter threshold
             score += 1
 
-        # 3. MACD turning down
-        if self.macd < self.macd_signal:
+        # 3. MACD clearly turning down
+        if self.macd < self.macd_signal and self.macd_histogram < -0.3:
             score += 1
 
-        # 4. Price action showing weakness
+        # 4. Price action weak
         if self.high > self.low:
             bar_position = (self.close - self.low) / (self.high - self.low)
-            if bar_position < 0.5:  # Close below midpoint
+            if bar_position < 0.4:  # Close in bottom 40%
                 score += 1
 
-        return score >= 2  # Relaxed: need 2/4 to exit faster
+        return score >= 3  # Need 3/4 to exit
 
     def _update_portfolio(self):
         """
         Update portfolio value based on current signal and position.
-        Supports position accumulation up to 70% of portfolio.
+        Supports DYNAMIC position accumulation (50 or 100 contracts)
         """
 
         # Calculate current position value
@@ -843,25 +925,28 @@ class IronOreIndicator(pcts3.sv_object):
 
         # Process signal to update portfolio
         if self.signal == 1:
-            # BUY signal - ADD to position (50 contracts)
-            # Check if we have enough cash and allocation room
-            cost = self.contracts_per_trade * self.close
+            # BUY signal - ADD contracts (DYNAMIC: 50 or 100 based on dip)
+            # Use contracts_to_add (calculated in _generate_signal)
+            cost = self.contracts_to_add * self.close
             if self.cash >= cost:
                 # Calculate new average entry price
                 total_cost_before = self.contracts_held * self.entry_price
-                new_cost = self.contracts_per_trade * self.close
-                new_contracts_total = self.contracts_held + self.contracts_per_trade
+                new_cost = self.contracts_to_add * self.close
+                new_contracts_total = self.contracts_held + self.contracts_to_add
 
                 if new_contracts_total > 0:
                     self.entry_price = (total_cost_before + new_cost) / new_contracts_total
 
                 # Add contracts and deduct cash
-                self.contracts_held += self.contracts_per_trade
+                self.contracts_held += self.contracts_to_add
                 self.cash -= cost
 
+                logger.info(f"[Bar {self.bar_index}] BUY: Added {self.contracts_to_add} contracts @ {self.close:.2f}. Total contracts: {self.contracts_held}")
+
         elif self.signal == -1 and self.contracts_held > 0:
-            # SELL signal - CLOSE ALL positions (take profit or cut loss)
+            # SELL signal - CLOSE ALL positions
             self.cash += self.contracts_held * self.close
+            logger.info(f"[Bar {self.bar_index}] SELL: Closed {self.contracts_held} contracts @ {self.close:.2f}")
             self.contracts_held = 0
             self.entry_price = 0.0
 
