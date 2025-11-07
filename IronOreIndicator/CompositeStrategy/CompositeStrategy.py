@@ -357,8 +357,8 @@ class CompositeStrategy(csc3.composite_strategy):
         # Metadata
         self.namespace = pc.namespace_private
         self.granularity = granularity
-        self.market = b'COMPOSITE'
-        self.code = b'PORTFOLIO'
+        self.market = b'DCE'
+        self.code = b'COMPOSITE'
         self.meta_name = "CompositeStrategy"
         self.revision = (1 << 32) - 1
         self.timetag_ = None
