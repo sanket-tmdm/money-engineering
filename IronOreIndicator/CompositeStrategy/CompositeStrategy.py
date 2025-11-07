@@ -381,6 +381,7 @@ class CompositeStrategy(csc3.composite_strategy):
         self.base_allocation_pct = 0.25
         self.max_allocation_pct = 0.35
         self.min_cash_reserve_pct = 0.15
+        self.max_leverage = 1.4  # Maximum leverage for positions
 
         # Risk manager
         self.risk_manager = RiskManager(initial_cash)
@@ -468,7 +469,18 @@ class CompositeStrategy(csc3.composite_strategy):
 
             results = []
             if self.bar_index > 0:
-                results.append(self.sv_copy())
+                sv = self.sv_copy()
+
+                # Diagnostic logging (first few times only)
+                if not hasattr(self, '_serialize_logged_count'):
+                    self._serialize_logged_count = 0
+
+                if self._serialize_logged_count < 3:
+                    logger.info(f"[DIAGNOSTIC] sv_copy() called: bar_index={self.bar_index}, "
+                               f"sv_type={type(sv)}, sv_valid={sv is not None and sv.size() > 0 if hasattr(sv, 'size') else 'N/A'}")
+                    self._serialize_logged_count += 1
+
+                results.append(sv)
 
             self.timetag = tm
             self.bar_index += 1
@@ -477,6 +489,21 @@ class CompositeStrategy(csc3.composite_strategy):
 
         # Route bars based on namespace
         if ns == pc.namespace_global:
+            # CRITICAL FIX: Manually set target_instrument from first market data arrival
+            # This is needed because reference data might not populate target_instrument in test env
+            commodity = self.calc_commodity(code)
+            key = (market, commodity)
+
+            if key in self.instrument_to_basket:
+                basket_idx = self.instrument_to_basket[key]
+                basket = self.strategies[basket_idx]
+
+                # If target_instrument is still empty, set it from actual market data
+                if basket.target_instrument == b'' or basket.target_instrument is None:
+                    basket.target_instrument = code
+                    basket.instrument = code
+                    logger.info(f"Basket {basket_idx} target_instrument set to {code.decode()} from market data")
+
             # Market data (SampleQuote) - route to baskets via framework
             # The framework's composite_strategy.on_bar() automatically routes
             # market data to allocated baskets based on market/code matching
@@ -486,17 +513,10 @@ class CompositeStrategy(csc3.composite_strategy):
             if not hasattr(self, '_market_data_seen'):
                 self._market_data_seen = set()
 
-            commodity = self.calc_commodity(code)
-            key = (market, commodity)
-
             if key not in self._market_data_seen and key in self.instrument_to_basket:
                 self._market_data_seen.add(key)
                 basket_idx = self.instrument_to_basket[key]
-                basket = self.strategies[basket_idx]
-                close_price = bar.get_double(3)
-                logger.info(f"Market data routed: {market.decode()}/{code.decode()} -> Basket {basket_idx} "
-                           f"(commodity={commodity.decode()}), price={close_price:.2f}, "
-                           f"basket.price={basket.price:.2f}, basket.pv=¥{basket.pv:,.0f}, signal={basket.signal}")
+                logger.info(f"Market data routing: {market.decode()}/{code.decode()} -> Basket {basket_idx}")
 
         elif ns == pc.namespace_private:
             # Tier-1 indicator signals
@@ -528,14 +548,21 @@ class CompositeStrategy(csc3.composite_strategy):
                     'rsi': parser.rsi,
                 }
 
-                self.total_signals_processed += 1
+                # CRITICAL FIX: Update basket price from signal data
+                # This ensures basket.price is populated even if market data routing fails
+                # due to empty target_instrument (which requires reference data)
+                basket = self.strategies[basket_idx]
+                if parser.close > 0:
+                    basket.price = parser.close
+                    # Only log first time for each basket
+                    if not hasattr(self, '_basket_price_logged'):
+                        self._basket_price_logged = set()
+                    if basket_idx not in self._basket_price_logged:
+                        market, code = self.basket_to_instrument[basket_idx]
+                        logger.info(f"Basket {basket_idx} ({market.decode()}/{code.decode()}) price initialized to {parser.close:.2f}")
+                        self._basket_price_logged.add(basket_idx)
 
-                # Only log non-zero signals
-                if parser.signal != 0:
-                    market, code = self.basket_to_instrument[basket_idx]
-                    logger.info(f"Signal received from basket {basket_idx} ({market.decode()}/{code.decode()}): "
-                               f"signal={parser.signal}, conf={parser.confidence:.2f}, regime={parser.regime}, "
-                               f"strength={parser.signal_strength:.2f}, price={parser.close:.2f}")
+                self.total_signals_processed += 1
                 break
 
     def _on_cycle_pass(self, time_tag: int):
@@ -563,6 +590,16 @@ class CompositeStrategy(csc3.composite_strategy):
         # Sync state
         self._save()
         self._sync()
+
+        # Diagnostic logging (first few times only)
+        if not hasattr(self, '_sync_logged_count'):
+            self._sync_logged_count = 0
+
+        if self._sync_logged_count < 3:
+            logger.info(f"[DIAGNOSTIC] After _sync(): bar_index={self.bar_index}, "
+                       f"pv={self.pv:.2f}, nv={self.nv:.4f}, "
+                       f"initialized={self.initialized}")
+            self._sync_logged_count += 1
 
         # Mark as initialized after first cycle
         if not self.initialized:
@@ -656,7 +693,7 @@ class CompositeStrategy(csc3.composite_strategy):
 
         if self._check_stop_loss(entry_price, current_price, basket.signal):
             market, code = self.basket_to_instrument[basket_idx]
-            logger.warning(f"STOP-LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()})")
+            logger.info(f"STOP-LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()})")
             return True
 
         # Signal reversal
@@ -696,37 +733,38 @@ class CompositeStrategy(csc3.composite_strategy):
         basket = self.strategies[basket_idx]
         market, code = self.basket_to_instrument[basket_idx]
 
-        # Calculate position size using price from Tier-1 signal
-        allocated_capital = self.pv * self.base_allocation_pct
-        current_price = signal_data['close']
-        contracts = self._calculate_position_size(allocated_capital, current_price)
+        # Calculate leverage based on confidence
+        confidence = signal_data['confidence']
+        leverage = 1.0 + (confidence * 1.5)  # 1.0 to 2.5
+        leverage = min(leverage, self.max_leverage)
 
         # Risk check
-        proposed_size = contracts * current_price
+        allocated_capital = self.pv * self.base_allocation_pct
         can_enter, reason = self.risk_manager.can_enter_position(
-            basket_idx, proposed_size, self._get_portfolio_state()
+            basket_idx, allocated_capital * leverage, self._get_portfolio_state()
         )
 
         if not can_enter:
-            logger.warning(f"ENTRY BLOCKED basket {basket_idx} ({market.decode()}/{code.decode()}): {reason}")
+            logger.info(f"ENTRY BLOCKED basket {basket_idx} ({market.decode()}/{code.decode()}): {reason}")
             return
 
-        # Execute trade via framework
+        # Execute trade via framework (WOS pattern)
         signal = signal_data['signal']
+
+        # Use signal price when basket.price not yet available (Day 1 before on_reference)
+        trade_price = basket.price if basket.price > 0 else signal_data['close']
+
         logger.info(f"{'LONG' if signal == 1 else 'SHORT'} basket {basket_idx}: "
-                   f"{market.decode()}/{code.decode()}, contracts={contracts}, "
-                   f"price={current_price:.2f}, conf={signal_data['confidence']:.2f}")
+                   f"{market.decode()}/{code.decode()}, lev={leverage:.2f}, "
+                   f"price={trade_price:.2f}, conf={confidence:.2f}")
 
         # Store entry price for stop-loss tracking
-        self.entry_prices[basket_idx] = current_price
+        self.entry_prices[basket_idx] = trade_price
         self.total_trades_executed += 1
 
-        # Execute via framework (basket handles position tracking internally)
-        basket._signal(current_price, basket.timetag, signal)
-
-        # Log basket state after trade (framework updated basket.pv)
-        logger.info(f"  -> Basket {basket_idx} after entry: cash=¥{basket.cash:,.0f}, pv=¥{basket.pv:,.0f}, "
-                   f"signal={basket.signal}")
+        # WOS pattern: _fit_position BEFORE _signal, use trade_price, invert signal
+        basket._fit_position(leverage)
+        basket._signal(trade_price, basket.timetag, signal * -1)
 
     def _execute_exit(self, basket_idx: int, signal_data: Dict):
         """Execute exit for basket"""
@@ -735,7 +773,8 @@ class CompositeStrategy(csc3.composite_strategy):
 
         # Calculate P&L
         entry_price = self.entry_prices[basket_idx]
-        exit_price = signal_data['close']
+        # Use signal price when basket.price not yet available (Day 1 before on_reference)
+        exit_price = basket.price if basket.price > 0 else signal_data['close']
 
         if entry_price > 0 and exit_price > 0:
             if basket.signal == 1:  # Long position
@@ -748,14 +787,10 @@ class CompositeStrategy(csc3.composite_strategy):
         else:
             logger.info(f"CLOSE basket {basket_idx}: {market.decode()}/{code.decode()}")
 
-        # Execute exit via framework
+        # Execute exit via framework (use exit_price with fallback)
         basket._signal(exit_price, basket.timetag, 0)
         self.entry_prices[basket_idx] = 0.0
         self.total_trades_closed += 1
-
-        # Log basket state after close (framework updated basket.pv)
-        logger.info(f"  -> Basket {basket_idx} after exit: cash=¥{basket.cash:,.0f}, pv=¥{basket.pv:,.0f}, "
-                   f"signal={basket.signal}")
 
     def _calculate_position_size(self, allocated_capital: float, current_price: float) -> int:
         """Calculate number of contracts"""
@@ -876,7 +911,19 @@ class CompositeStrategy(csc3.composite_strategy):
 
         Returns True after initialization completes.
         """
-        return self.initialized and self.bar_index > 0
+        result = self.initialized and self.bar_index > 0
+
+        # Diagnostic logging (only log first few times or when False)
+        if not hasattr(self, '_ready_logged_count'):
+            self._ready_logged_count = 0
+
+        if self._ready_logged_count < 3 or not result:
+            logger.info(f"[DIAGNOSTIC] ready_to_serialize() -> {result} "
+                       f"(initialized={self.initialized}, bar_index={self.bar_index}, "
+                       f"meta_id={getattr(self, 'meta_id', 'NOT_SET')})")
+            self._ready_logged_count += 1
+
+        return result
 
 # ============================================================================
 # GLOBAL STRATEGY INSTANCE
@@ -893,7 +940,14 @@ async def on_init():
     global strategy, imports, metas, worker_no
 
     if worker_no != 0 and metas and imports:
+        logger.info(f"[DIAGNOSTIC] Before load_def_from_dict: meta_id={getattr(strategy, 'meta_id', 'NOT_SET')}")
+        logger.info(f"[DIAGNOSTIC] metas keys: {list(metas.keys()) if metas else 'NONE'}")
+        logger.info(f"[DIAGNOSTIC] strategy.meta_name={strategy.meta_name}")
+
         strategy.load_def_from_dict(metas)
+
+        logger.info(f"[DIAGNOSTIC] After load_def_from_dict: meta_id={getattr(strategy, 'meta_id', 'NOT_SET')}")
+
         for parser in strategy.parsers.values():
             parser.load_def_from_dict(metas)
             parser.set_global_imports(imports)
@@ -938,8 +992,9 @@ async def on_tradeday_end(market, tradeday, timetag, timestring):
 
 
 async def on_reference(market, tradeday, data, timetag, timestring):
-    """Reference data event"""
-    pass
+    """CRITICAL: Forward reference data to baskets for contract rolling"""
+    global strategy
+    strategy.on_reference(bytes(market, 'utf-8'), tradeday, data)
 
 
 async def on_historical(params, records):
