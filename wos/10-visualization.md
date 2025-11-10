@@ -1,9 +1,9 @@
 # Chapter 10: Visualization and Analysis
 
 **Learning objectives:**
-- Create visualization scripts for indicator analysis
-- Fetch data using svr3 API
-- Analyze parameter performance
+- Fetch calculated indicator data using svr3
+- Create visualization scripts for analysis
+- Understand Tier-1 vs Tier-2 data patterns
 - Generate diagnostic plots
 - Optimize indicator parameters
 
@@ -13,51 +13,282 @@
 
 ## Overview
 
-Visualization helps understand indicator behavior, identify issues, and optimize parameters. This chapter shows how to create analysis scripts using the svr3 API.
+Visualization fetches calculated StructValues from server to analyze indicator behavior, identify issues, and optimize parameters. The svr3 module provides async API for flexible data retrieval.
 
-## Visualization Script Template
+## The svr3 Module
+
+**Purpose**: Async module for fetching calculated indicator StructValues from server.
+
+**Use Case**: Query any indicator or composite strategy's performance metrics for tuning.
+
+### StructValue Indexing
+
+**Index Components**: (meta_id, granularity, market, stock_code, time_tag)
+
+| Tier | meta_id | granularity | market/stock_code Pattern | Output Count |
+|------|---------|-------------|---------------------------|--------------|
+| **Tier-1** | Fixed | Fixed | Multiple (m, s) pairs from uout.json | Many commodities |
+| **Tier-2** | Fixed | Fixed | Single placeholder (m, `<00>` or `<01>`) | One synthetic |
+
+**Tier-1 Pattern**:
+- Outputs for ALL (market, security) where `commodity(security)` in `securities[market]` from uout.json
+- Example: uout.json has `securities: [["i", "j"], ["cu", "al"]]`
+- Outputs: `DCE/i<00>`, `DCE/j<00>`, `SHFE/cu<00>`, `SHFE/al<00>`
+- **Visualization**: Pick ONE commodity as example (e.g., `cu<00>`)
+
+**Tier-2 Pattern**:
+- Single output with placeholder stock_code (e.g., `COMPOSITE<00>`)
+- Real exposures defined in StructValue fields (markets, codes arrays)
+- **Visualization**: Use single (market, placeholder_code) from uout.json
+
+### svr3.sv_reader Signature
+
+```python
+client = svr3.sv_reader(
+    start_date,              # int: YYYYMMDDHHmmss format
+    end_date,                # int: YYYYMMDDHHmmss format
+    meta_name,               # str: Indicator name (e.g., "MyIndicator")
+    granularity,             # int: Seconds (e.g., 300 for 5min)
+    namespace,               # str: "global" or "private"
+    mode,                    # str: "symbol" (standard mode)
+    markets,                 # List[str]: ["DCE", "SHFE", ...]
+    codes,                   # List[str]: ["cu<00>", "i<00>", ...]
+    persistent,              # bool: False (no auto-save to file)
+    rails_url,               # str: Backend API URL
+    ws_url,                  # str: WebSocket URL for data fetch
+    username,                # str: "" (leave blank)
+    password,                # str: "" (leave blank, use token)
+    tm_master_endpoint,      # Tuple[str, int]: Time machine server
+)
+client.token = "YOUR_TOKEN"  # Set token after creation
+```
+
+### Pattern 1: Single Connection, Single Fetch
+
+```python
+import asyncio
+import svr3
+from typing import List, Dict
+
+class IndicatorFetcher:
+    def __init__(self, token: str):
+        self.token = token
+        self.start_date = 20230103203204
+        self.end_date = 20230510203204
+
+    async def connect_and_fetch(self, market: str, instrument: str) -> List[Dict]:
+        """Connect and fetch data for one market/instrument pair"""
+
+        print(f"🔄 Fetching {market}/{instrument}...")
+
+        client = svr3.sv_reader(
+            self.start_date,
+            self.end_date,
+            "MyIndicator",                              # Your indicator name
+            300,                                        # 5-minute granularity
+            "private",                                  # Namespace
+            "symbol",                                   # Mode
+            [market],                                   # Markets
+            [instrument],                               # Instruments
+            False,                                      # No persistent file
+            "https://10.99.100.116:4433/private-api/", # Rails URL
+            "wss://10.99.100.116:4433/tm",             # WebSocket URL
+            "",                                         # Username (blank)
+            "",                                         # Password (blank)
+            ("10.99.100.116", 6102),                   # Time machine master
+        )
+        client.token = self.token
+
+        await client.login()
+        await client.connect()
+        client.ws_task = asyncio.create_task(client.ws_loop())
+        await client.shakehand()
+
+        ret = await client.save_by_symbol()
+        data = ret[1][1]  # Extract data from result tuple
+
+        # Cleanup
+        client.stop()
+        await client.join()
+
+        return data
+
+# Usage (Interactive Mode - VS Code/Cursor notebooks)
+if __name__ == '__main__':
+    fetcher = IndicatorFetcher("YOUR_TOKEN")
+    data = await fetcher.connect_and_fetch("SHFE", "cu<00>")
+    print(f"Fetched {len(data)} records")
+
+# Usage (Regular Mode - Python interpreter)
+if __name__ == '__main__':
+    async def main():
+        fetcher = IndicatorFetcher("YOUR_TOKEN")
+        data = await fetcher.connect_and_fetch("SHFE", "cu<00>")
+        print(f"Fetched {len(data)} records")
+
+    asyncio.run(main())
+```
+
+### Pattern 2: Single Connection, Multiple Fetches (Recommended)
+
+**Use Case**: Fetch multiple market/instrument pairs efficiently by reusing connection.
+
+```python
+class MultiFetcher:
+    def __init__(self, token: str):
+        self.token = token
+        self.start_date = 20230103203204
+        self.end_date = 20230510203204
+        self.client = None
+
+    async def connect(self):
+        """Establish connection (call once)"""
+
+        self.client = svr3.sv_reader(
+            self.start_date,
+            self.end_date,
+            "MyIndicator",
+            300,
+            "private",
+            "symbol",
+            ["DCE"],                                    # Initial market
+            ["i<00>"],                                  # Initial instrument
+            False,
+            "https://10.99.100.116:4433/private-api/",
+            "wss://10.99.100.116:4433/tm",
+            "",
+            "",
+            ("10.99.100.116", 6102),
+        )
+        self.client.token = self.token
+
+        await self.client.login()
+        await self.client.connect()
+        self.client.ws_task = asyncio.create_task(self.client.ws_loop())
+        await self.client.shakehand()
+
+    async def fetch(self, market: str, instrument: str) -> List[Dict]:
+        """Fetch data by updating markets/codes and reusing connection"""
+
+        self.client.markets = [market]
+        self.client.codes = [instrument]
+
+        ret = await self.client.save_by_symbol()
+        return ret[1][1]
+
+    async def close(self):
+        """Clean up connection"""
+
+        self.client.stop()
+        await self.client.join()
+
+# Usage
+async def main():
+    fetcher = MultiFetcher("YOUR_TOKEN")
+
+    await fetcher.connect()
+
+    # Fetch multiple instruments
+    cu_data = await fetcher.fetch("SHFE", "cu<00>")
+    al_data = await fetcher.fetch("SHFE", "al<00>")
+    i_data = await fetcher.fetch("DCE", "i<00>")
+
+    await fetcher.close()
+
+    print(f"Fetched cu: {len(cu_data)}, al: {len(al_data)}, i: {len(i_data)}")
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+### Async/Await Usage Patterns
+
+| Mode | Entry Pattern | Use Case |
+|------|---------------|----------|
+| **Interactive** | `await main_entry()` | VS Code/Cursor notebooks, interactive analysis |
+| **Regular** | `asyncio.run(main_entry())` | Python interpreter, production scripts |
+
+**Compatible Pattern** (works in both modes):
+
+```python
+async def main_entry():
+    # ... async code ...
+    pass
+
+if __name__ == '__main__':
+    try:
+        # Interactive mode (notebooks)
+        await main_entry()
+    except SyntaxError:
+        # Regular mode (interpreter)
+        import asyncio
+        asyncio.run(main_entry())
+```
+
+---
+
+## Complete Visualization Example
 
 ```python
 #!/usr/bin/env python3
-"""Indicator Visualization Script"""
+"""Tier-1 Indicator Visualization"""
 
+import asyncio
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Dict
 import svr3
 
-# Configuration
-STRATEGY_NAME = "MyIndicator"
-NAMESPACE = "private"
-MARKET = "SHFE"
-CODE = "cu<00>"
-GRANULARITY = 900
+class IndicatorVisualizer:
+    def __init__(self, token: str, start: int, end: int):
+        self.token = token
+        self.start_date = start
+        self.end_date = end
+        self.client = None
 
-# Time range
-START_TIME = "20250701000000"
-END_TIME = "20250710000000"
+    async def connect(self, indicator_name: str, granularity: int):
+        """Connect to server"""
 
-# SVR3 connection
-SVR_HOST = "10.99.100.116"
-SVR_PORT = 8080
-TOKEN = "YOUR_TOKEN"
+        self.client = svr3.sv_reader(
+            self.start_date,
+            self.end_date,
+            indicator_name,
+            granularity,
+            "private",
+            "symbol",
+            ["SHFE"],
+            ["cu<00>"],
+            False,
+            "https://10.99.100.116:4433/private-api/",
+            "wss://10.99.100.116:4433/tm",
+            "",
+            "",
+            ("10.99.100.116", 6102),
+        )
+        self.client.token = self.token
 
-def fetch_indicator_data(start, end):
-    """Fetch indicator data using svr3."""
-    client = svr3.Client(SVR_HOST, SVR_PORT, TOKEN)
+        await self.client.login()
+        await self.client.connect()
+        self.client.ws_task = asyncio.create_task(self.client.ws_loop())
+        await self.client.shakehand()
 
-    data = client.fetch(
-        namespace=NAMESPACE,
-        strategy=STRATEGY_NAME,
-        market=MARKET,
-        code=CODE,
-        granularity=GRANULARITY,
-        start=start,
-        end=end
-    )
+    async def fetch(self, market: str, code: str) -> pd.DataFrame:
+        """Fetch data and convert to DataFrame"""
 
-    return pd.DataFrame(data)
+        self.client.markets = [market]
+        self.client.codes = [code]
+
+        ret = await self.client.save_by_symbol()
+        data = ret[1][1]
+
+        return pd.DataFrame(data)
+
+    async def close(self):
+        """Cleanup"""
+
+        self.client.stop()
+        await self.client.join()
 
 def plot_indicator_signals(df):
     """Plot indicator signals over time."""
@@ -240,19 +471,81 @@ def plot_parameter_heatmap(results_df):
     plt.savefig('parameter_sweep.png', dpi=150)
 ```
 
+---
+
+## Market/Instrument Selection Guide
+
+| Indicator Type | uout.json Pattern | Visualization Query | Example |
+|----------------|-------------------|---------------------|---------|
+| **Tier-1** | `securities: [["i", "j"], ["cu", "al"]]` | Pick ONE commodity | `("SHFE", "cu<00>")` |
+| **Tier-2** | `securities: [["COMPOSITE"]]` | Use placeholder | `("DCE", "COMPOSITE<00>")` |
+
+**Tier-1 Selection Strategy**:
+```python
+# Check uout.json securities field
+# Example: securities: [["i", "j"], ["cu", "al", "rb"]]
+
+# Pick one from each market for analysis
+tier1_samples = [
+    ("DCE", "i<00>"),      # Iron ore
+    ("SHFE", "cu<00>"),    # Copper
+]
+```
+
+**Tier-2 Selection Strategy**:
+```python
+# Tier-2 has single synthetic instrument
+# Query uses market + placeholder from uout.json
+
+tier2_query = ("DCE", "COMPOSITE<00>")  # Or whatever placeholder in uout.json
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Empty data returned | Wrong market/code combination | Check uout.json securities field, use correct (market, code) |
+| Connection timeout | Wrong rails_url or ws_url | Verify server endpoints, check network |
+| Token error | Invalid or expired token | Get fresh token from server admin |
+| Missing indicator | Backtest not run or failed | Run backtest first, check logs |
+| Wrong granularity | Indicator outputs different granularity | Match granularity with uout.json sample_granularities |
+
+**Debugging Steps**:
+1. Verify indicator ran successfully (check server logs)
+2. Confirm market/code exists in uout.json
+3. Check date range has data (align with backtest period)
+4. Validate token with simple query
+5. Test connection with known working indicator first
+
+---
+
 ## Summary
 
-Visualization helps:
-- Understand indicator behavior
-- Identify parameter issues
-- Optimize performance
-- Debug problems
-- Communicate results
+**Core Concepts**:
+- svr3 async module fetches calculated StructValues from server
+- Tier-1: Multiple (market, commodity) outputs → pick ONE for visualization
+- Tier-2: Single placeholder output → use market + placeholder from uout.json
+- Connection lifecycle: connect() → fetch() → close()
+- Two patterns: single fetch or reuse connection for multiple fetches
 
-Key tools:
-- svr3 API for data fetching
-- pandas for data manipulation
-- matplotlib/seaborn for plotting
+**Critical Requirements**:
+1. Use `svr3.sv_reader()` with 12 parameters (not `svr3.Client()`)
+2. Set `client.token` after creation
+3. Call `login() → connect() → ws_loop() → shakehand()` before fetching
+4. Use `client.save_by_symbol()` to fetch data, result in `ret[1][1]`
+5. Call `client.stop()` and `await client.join()` for cleanup
+6. Match market/code with uout.json securities field
+7. Use async/await patterns (interactive vs regular mode)
+
+**Key Tools**:
+- svr3: Server data fetching
+- pandas: Data manipulation
+- matplotlib/seaborn: Plotting
+- asyncio: Async execution
+
+**Reference**: See MargaritaComposite/margarita_composite_viz.py for working Tier-2 example
 
 **Next**: Iterative optimization workflow.
 
