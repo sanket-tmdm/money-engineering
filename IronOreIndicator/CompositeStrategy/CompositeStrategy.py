@@ -152,6 +152,70 @@ class RiskManager:
             'peak_value': self.peak_portfolio_value,
         }
 
+    def check_leverage_weighted_exposure(self, positions: Dict, portfolio_value: float) -> Tuple[bool, float]:
+        """
+        Check portfolio exposure using leverage weighting
+
+        Formula: sum(position_value / leverage) / portfolio_value <= 0.90
+
+        This prevents over-leveraging entire portfolio by measuring
+        the actual capital at risk, not notional value.
+
+        Args:
+            positions: Dict of {basket_idx: {'value': float, 'leverage': float}}
+            portfolio_value: Total portfolio value
+
+        Returns:
+            (is_within_limits: bool, exposure_pct: float)
+        """
+        if portfolio_value <= 0:
+            return True, 0.0
+
+        # Calculate base exposure (capital at risk, not notional)
+        base_exposure = sum(
+            pos['value'] / pos['leverage']
+            for pos in positions.values()
+            if pos.get('leverage', 1.0) > 0
+        )
+
+        exposure_pct = base_exposure / portfolio_value
+
+        return exposure_pct <= self.max_total_exposure, exposure_pct
+
+    def get_max_leverage_for_state(self, active_positions: int) -> float:
+        """
+        Calculate maximum safe leverage based on portfolio state
+
+        Reduces max leverage when:
+        - High drawdown
+        - Daily loss significant
+        - Multiple active positions
+
+        Returns:
+            Maximum safe leverage multiplier
+        """
+        max_lev = 20.0  # Start with absolute max
+
+        # Reduce based on drawdown
+        if self.current_drawdown > 0.05:
+            max_lev *= 0.60  # Severe reduction at 5%+ DD
+        elif self.current_drawdown > 0.03:
+            max_lev *= 0.80  # Moderate reduction at 3%+ DD
+
+        # Reduce based on daily loss
+        if self.daily_loss > 0.02:
+            max_lev *= 0.60  # Severe reduction at 2%+ daily loss
+        elif self.daily_loss > 0.01:
+            max_lev *= 0.80  # Moderate reduction at 1%+ daily loss
+
+        # Reduce based on concentration
+        if active_positions >= 3:
+            max_lev *= 0.90  # Slight reduction when all baskets active
+        elif active_positions >= 2:
+            max_lev *= 0.95  # Very slight reduction
+
+        return max(max_lev, 1.0)  # Never below 1.0x
+
 # ============================================================================
 # REBALANCER
 # ============================================================================
@@ -308,6 +372,236 @@ class DynamicCashManager:
         return max(available, 0)
 
 # ============================================================================
+# DYNAMIC LEVERAGE MANAGER
+# ============================================================================
+
+class DynamicLeverageManager:
+    """
+    Smart leverage calculation based on:
+    - Signal conviction (confidence + strength)
+    - Market volatility (chaos regimes, ATR)
+    - Portfolio state (drawdown, daily loss)
+    - Position tier (STRONG/MEDIUM/WEAK)
+
+    Goal: Maximize profits while minimizing drawdown
+    """
+
+    def __init__(self):
+        # Leverage ranges by conviction tier
+        self.leverage_tiers = {
+            'STRONG': {'min': 4.0, 'max': 10.0, 'multiplier': 12.86},
+            'MEDIUM': {'min': 2.5, 'max': 6.0, 'multiplier': 10.0},
+            'WEAK': {'min': 1.5, 'max': 4.0, 'multiplier': 10.0},
+        }
+
+        # Hard caps
+        self.max_leverage = 20.0  # Absolute maximum
+        self.max_basket_leverage = 15.0  # Per-basket maximum
+
+        # Stop-loss tiers (tighter stops for higher leverage)
+        self.stop_loss_tiers = [
+            (2.0, 0.030),   # Up to 2x: 3.0% stop
+            (4.0, 0.025),   # Up to 4x: 2.5% stop
+            (6.0, 0.020),   # Up to 6x: 2.0% stop
+            (10.0, 0.015),  # Up to 10x: 1.5% stop
+            (20.0, 0.010),  # Above 10x: 1.0% stop
+        ]
+
+        # Profit targets by leverage (earlier exits for high leverage)
+        self.profit_targets = [
+            (5.0, 0.07),    # 5x+: 7% target
+            (3.0, 0.08),    # 3x+: 8% target
+            (0.0, 0.10),    # Default: 10% target
+        ]
+
+    def calculate_leverage(self, conviction: float, tier: str,
+                          chaos_baskets: int = 0,
+                          portfolio_dd: float = 0.0,
+                          daily_loss: float = 0.0) -> float:
+        """
+        Calculate smart leverage based on conviction and risk factors
+
+        Args:
+            conviction: Combined conviction score (0.0-1.0)
+            tier: Position tier ('STRONG', 'MEDIUM', 'WEAK')
+            chaos_baskets: Number of baskets in chaos regime
+            portfolio_dd: Current portfolio drawdown (0.0-1.0)
+            daily_loss: Current daily loss (0.0-1.0)
+
+        Returns:
+            Leverage multiplier (1.0-20.0)
+        """
+        # Get tier parameters
+        tier_params = self.leverage_tiers.get(tier, self.leverage_tiers['WEAK'])
+
+        # Base leverage from conviction
+        base_leverage = 1.0 + (conviction * tier_params['multiplier'])
+
+        # Clamp to tier range
+        leverage = max(tier_params['min'], min(base_leverage, tier_params['max']))
+
+        # Risk adjustments (multiplicative)
+        if chaos_baskets >= 2:
+            leverage *= 0.60  # Reduce by 40% in high volatility
+        elif chaos_baskets == 1:
+            leverage *= 0.80  # Reduce by 20% in moderate volatility
+
+        if portfolio_dd > 0.05:  # 5% drawdown
+            leverage *= 0.70  # Reduce by 30%
+        elif portfolio_dd > 0.03:  # 3% drawdown
+            leverage *= 0.85  # Reduce by 15%
+
+        if daily_loss > 0.02:  # 2% daily loss
+            leverage *= 0.60  # Reduce by 40%
+        elif daily_loss > 0.01:  # 1% daily loss
+            leverage *= 0.80  # Reduce by 20%
+
+        # Ensure minimum of 1.0x
+        leverage = max(1.0, leverage)
+
+        # Apply hard caps
+        leverage = min(leverage, self.max_basket_leverage, self.max_leverage)
+
+        return leverage
+
+    def get_stop_loss(self, leverage: float) -> float:
+        """
+        Get leverage-adjusted stop-loss percentage
+
+        Higher leverage = tighter stops to protect capital
+        """
+        for max_lev, stop_pct in self.stop_loss_tiers:
+            if leverage <= max_lev:
+                return stop_pct
+        return 0.010  # 1% for very high leverage
+
+    def get_profit_target(self, leverage: float) -> float:
+        """
+        Get leverage-adjusted profit target
+
+        Higher leverage = earlier profit taking
+        """
+        for min_lev, target_pct in self.profit_targets:
+            if leverage >= min_lev:
+                return target_pct
+        return 0.10  # 10% default
+
+    def ensure_minimum_contracts(self, position_value: float,
+                                 contract_size: float,
+                                 basket_pv: float,
+                                 size_pct: float,
+                                 min_contracts: int = 1) -> float:
+        """
+        Calculate minimum leverage needed to trade at least N contracts
+
+        Args:
+            position_value: Current calculated position value
+            contract_size: Size of one contract in CNY
+            basket_pv: Basket portfolio value
+            size_pct: Position size percentage
+            min_contracts: Minimum number of contracts to trade
+
+        Returns:
+            Required leverage (capped at max_leverage)
+        """
+        min_position_value = contract_size * min_contracts
+
+        if position_value >= min_position_value:
+            # Already sufficient
+            return position_value / (basket_pv * size_pct)
+
+        # Calculate required leverage
+        required_leverage = min_position_value / (basket_pv * size_pct)
+
+        # Cap at maximum
+        return min(required_leverage, self.max_leverage)
+
+# ============================================================================
+# TRAILING STOP MANAGER
+# ============================================================================
+
+class TrailingStopManager:
+    """
+    Manages trailing stops for profitable positions
+
+    Activates when:
+    - Leverage >= 5x and profit >= 5%
+    - Trails 2% below peak price
+    """
+
+    def __init__(self):
+        self.activation_leverage = 5.0  # Activate for 5x+ leverage
+        self.activation_profit = 0.05   # Activate at 5% profit
+        self.trail_distance = 0.02      # Trail 2% below peak
+
+        # Track peaks for each basket
+        self.peak_prices = {0: 0.0, 1: 0.0, 2: 0.0}
+        self.trailing_active = {0: False, 1: False, 2: False}
+        self.trail_stops = {0: 0.0, 1: 0.0, 2: 0.0}
+
+    def update(self, basket_idx: int, current_price: float,
+               entry_price: float, position_type: int,
+               leverage: float, pnl_pct: float):
+        """
+        Update trailing stop for a position
+
+        Args:
+            basket_idx: Basket index
+            current_price: Current market price
+            entry_price: Entry price
+            position_type: 1 (LONG) or -1 (SHORT)
+            leverage: Current leverage
+            pnl_pct: Current P&L percentage
+        """
+        # Check activation conditions
+        if leverage >= self.activation_leverage and pnl_pct >= self.activation_profit:
+            if not self.trailing_active[basket_idx]:
+                self.trailing_active[basket_idx] = True
+                self.peak_prices[basket_idx] = current_price
+                logger.info(f"Trailing stop ACTIVATED for basket {basket_idx} "
+                           f"at {current_price:.2f} (leverage={leverage:.1f}x, P&L={pnl_pct*100:.1f}%)")
+
+        # Update peak and trail stop if active
+        if self.trailing_active[basket_idx]:
+            if position_type == 1:  # LONG
+                if current_price > self.peak_prices[basket_idx]:
+                    self.peak_prices[basket_idx] = current_price
+                    self.trail_stops[basket_idx] = current_price * (1 - self.trail_distance)
+            else:  # SHORT
+                if current_price < self.peak_prices[basket_idx] or self.peak_prices[basket_idx] == 0:
+                    self.peak_prices[basket_idx] = current_price
+                    self.trail_stops[basket_idx] = current_price * (1 + self.trail_distance)
+
+    def check(self, basket_idx: int, current_price: float,
+              position_type: int) -> bool:
+        """
+        Check if trailing stop hit
+
+        Returns True if stop triggered
+        """
+        if not self.trailing_active[basket_idx]:
+            return False
+
+        if position_type == 1:  # LONG
+            if current_price <= self.trail_stops[basket_idx]:
+                logger.info(f"Trailing stop HIT for basket {basket_idx}: "
+                           f"price {current_price:.2f} <= stop {self.trail_stops[basket_idx]:.2f}")
+                return True
+        else:  # SHORT
+            if current_price >= self.trail_stops[basket_idx]:
+                logger.info(f"Trailing stop HIT for basket {basket_idx}: "
+                           f"price {current_price:.2f} >= stop {self.trail_stops[basket_idx]:.2f}")
+                return True
+
+        return False
+
+    def reset(self, basket_idx: int):
+        """Reset trailing stop for basket (call on exit)"""
+        self.peak_prices[basket_idx] = 0.0
+        self.trailing_active[basket_idx] = False
+        self.trail_stops[basket_idx] = 0.0
+
+# ============================================================================
 # SIGNAL PARSERS
 # ============================================================================
 
@@ -449,6 +743,8 @@ class CompositeStrategy(csc3.composite_strategy):
         self.total_signals_processed = 0
         self.portfolio_exposure_pct = 0.0
         self.cash_reserve_pct = 0.0
+        self.leverage_weighted_exposure = 0.0  # NEW: Leverage-adjusted exposure
+        self.avg_active_leverage = 1.0  # NEW: Average leverage across active positions
 
         # Per-basket metrics (for individual basket P&L visualization)
         self.basket_0_pv = 0.0
@@ -472,7 +768,7 @@ class CompositeStrategy(csc3.composite_strategy):
         self.base_allocation_pct = 0.25
         self.max_allocation_pct = 0.35
         self.min_cash_reserve_pct = 0.10  # 10% min cash (target: 90% invested)
-        self.max_leverage = 1.4  # Maximum leverage for positions
+        self.max_leverage = 20.0  # Maximum leverage for positions (smart leverage cap)
 
         # Risk manager
         self.risk_manager = RiskManager(initial_cash)
@@ -483,8 +779,17 @@ class CompositeStrategy(csc3.composite_strategy):
         # Dynamic cash manager
         self.cash_manager = DynamicCashManager()
 
-        # Entry price tracking (for stop-loss)
+        # Dynamic leverage manager (NEW)
+        self.leverage_manager = DynamicLeverageManager()
+
+        # Trailing stop manager (NEW)
+        self.trailing_stop_manager = TrailingStopManager()
+
+        # Entry price tracking (for stop-loss and trailing stops)
         self.entry_prices = {0: 0.0, 1: 0.0, 2: 0.0}
+
+        # Leverage tracking (for monitoring and risk management)
+        self.active_leverages = {0: 1.0, 1: 1.0, 2: 1.0}
 
         # Initialize baskets
         self._initialize_baskets(initial_cash)
@@ -548,6 +853,36 @@ class CompositeStrategy(csc3.composite_strategy):
             code_str = code_str[:-1]
 
         return code_str.encode('utf-8')
+
+    def _get_contract_size(self, basket_idx: int) -> float:
+        """
+        Get contract notional value for instrument
+
+        Returns contract value in CNY based on current price and multiplier
+        """
+        market, code = self.basket_to_instrument[basket_idx]
+        basket = self.strategies[basket_idx]
+
+        # Get current price (use signal price as fallback)
+        if basket_idx in self.tier1_signals:
+            price = self.tier1_signals[basket_idx].get('close', basket.price)
+        else:
+            price = basket.price
+
+        if price <= 0:
+            return 0.0
+
+        # Contract multipliers (tons per contract)
+        MULTIPLIERS = {
+            (b'DCE', b'i'): 100,    # Iron Ore: 100 tons
+            (b'SHFE', b'cu'): 5,    # Copper: 5 tons
+            (b'DCE', b'm'): 10,     # Soybean: 10 tons
+        }
+
+        multiplier = MULTIPLIERS.get((market, code), 1)
+        contract_value = price * multiplier
+
+        return contract_value
 
     def _update_basket_price(self, basket_idx: int, price: float, time_tag: int):
         """
@@ -835,13 +1170,14 @@ class CompositeStrategy(csc3.composite_strategy):
 
     def _should_exit(self, basket_idx: int, signal_data: Dict, basket) -> Tuple[bool, str]:
         """
-        Enhanced exit condition checks with profit-taking
+        Enhanced exit condition checks with leverage-aware profit-taking and trailing stops
 
         Returns: (should_exit: bool, exit_reason: str)
         """
         entry_price = self.entry_prices[basket_idx]
         current_price = signal_data['close']
         market, code = self.basket_to_instrument[basket_idx]
+        leverage = self.active_leverages.get(basket_idx, 1.0)
 
         # Calculate current P&L
         if entry_price > 0 and current_price > 0:
@@ -852,13 +1188,25 @@ class CompositeStrategy(csc3.composite_strategy):
         else:
             pnl_pct = 0.0
 
-        # 1. PROFIT TAKING (tiered targets)
-        if pnl_pct >= 0.10:  # 10% profit
-            logger.info(f"PROFIT TARGET: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
-                       f"hit 10% profit ({pnl_pct*100:.1f}%)")
-            return True, f"profit_target_10pct"
+        # Update trailing stop
+        self.trailing_stop_manager.update(
+            basket_idx, current_price, entry_price, basket.signal, leverage, pnl_pct
+        )
 
-        if pnl_pct >= 0.05:  # 5% profit with conviction degradation
+        # 0. TRAILING STOP (for high leverage positions)
+        if self.trailing_stop_manager.check(basket_idx, current_price, basket.signal):
+            return True, "trailing_stop"
+
+        # 1. LEVERAGE-ADJUSTED PROFIT TARGETS
+        profit_target = self.leverage_manager.get_profit_target(leverage)
+
+        if pnl_pct >= profit_target:
+            logger.info(f"PROFIT TARGET: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                       f"hit {profit_target*100:.0f}% profit ({pnl_pct*100:.1f}%) at {leverage:.1f}x leverage")
+            return True, f"profit_target_{int(profit_target*100)}pct"
+
+        # Additional 5% profit protection with conviction degradation
+        if pnl_pct >= 0.05:
             conviction = (signal_data['confidence'] * 0.6 +
                          signal_data['signal_strength'] * 0.4)
             if conviction < 0.40:
@@ -866,11 +1214,12 @@ class CompositeStrategy(csc3.composite_strategy):
                            f"5% profit + weak signal (conv={conviction:.2f})")
                 return True, f"profit_protect_5pct"
 
-        # 2. STOP-LOSS (3%)
-        if self._check_stop_loss(entry_price, current_price, basket.signal):
+        # 2. LEVERAGE-ADJUSTED STOP-LOSS
+        stop_loss_pct = self.leverage_manager.get_stop_loss(leverage)
+        if self._check_stop_loss(entry_price, current_price, basket.signal, stop_loss_pct):
             logger.info(f"STOP-LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
-                       f"hit 3% loss ({pnl_pct*100:.1f}%)")
-            return True, "stop_loss"
+                       f"hit {stop_loss_pct*100:.1f}% loss ({pnl_pct*100:.1f}%) at {leverage:.1f}x leverage")
+            return True, f"stop_loss_{int(stop_loss_pct*100)}pct"
 
         # 3. SIGNAL REVERSAL (immediate exit)
         if signal_data['signal'] * basket.signal < 0:
@@ -902,8 +1251,9 @@ class CompositeStrategy(csc3.composite_strategy):
 
         return False, ""
 
-    def _check_stop_loss(self, entry_price: float, current_price: float, position_type: int) -> bool:
-        """Check if stop-loss hit (3%)"""
+    def _check_stop_loss(self, entry_price: float, current_price: float,
+                        position_type: int, stop_loss_pct: float = 0.03) -> bool:
+        """Check if stop-loss hit (leverage-adjusted)"""
         if entry_price == 0 or current_price == 0:
             return False
 
@@ -912,16 +1262,16 @@ class CompositeStrategy(csc3.composite_strategy):
         else:  # Short
             loss_pct = (current_price - entry_price) / entry_price
 
-        return loss_pct >= 0.03
+        return loss_pct >= stop_loss_pct
 
     def _execute_entry(self, basket_idx: int, signal_data: Dict):
         """
-        Execute entry using TIERED position sizing
+        Execute entry using TIERED position sizing with SMART LEVERAGE
 
         Sizing tiers based on signal conviction:
-        - STRONG (conviction >= 0.55): 80-100% of basket capital
-        - MEDIUM (conviction >= 0.35): 40-60% of basket capital
-        - WEAK (conviction >= 0.20): 20-30% of basket capital
+        - STRONG (conviction >= 0.55): 80-100% of basket capital, 4-10x leverage
+        - MEDIUM (conviction >= 0.35): 40-60% of basket capital, 2.5-6x leverage
+        - WEAK (conviction >= 0.20): 20-30% of basket capital, 1.5-4x leverage
 
         Never blocks trades - uses fallback capital chain if needed.
         """
@@ -952,12 +1302,34 @@ class CompositeStrategy(csc3.composite_strategy):
             size_pct *= 0.70  # Reduce by 30% in high volatility
             tier_name += "_CHAOS_REDUCED"
 
-        # Calculate leverage (conviction-based, but capped)
-        leverage = 1.0 + (conviction * 1.4)  # 1.0 to 2.4 range
-        leverage = min(leverage, self.max_leverage)
+        # Calculate SMART LEVERAGE (conviction-based, risk-adjusted)
+        leverage = self.leverage_manager.calculate_leverage(
+            conviction=conviction,
+            tier=tier_name.replace("_CHAOS_REDUCED", ""),  # Clean tier name
+            chaos_baskets=portfolio_conviction['chaos_baskets'],
+            portfolio_dd=self.risk_manager.current_drawdown,
+            daily_loss=self.risk_manager.daily_loss
+        )
 
         # Calculate target position value
         target_position_value = basket.pv * size_pct * leverage
+
+        # Ensure minimum contracts (especially for large contracts like copper)
+        contract_size = self._get_contract_size(basket_idx)
+        if contract_size > 0:
+            min_contracts = 1
+            min_position_value = contract_size * min_contracts
+
+            if target_position_value < min_position_value:
+                # Increase leverage to achieve minimum
+                required_leverage = self.leverage_manager.ensure_minimum_contracts(
+                    target_position_value, contract_size, basket.pv, size_pct, min_contracts
+                )
+                if required_leverage <= self.leverage_manager.max_leverage:
+                    leverage = required_leverage
+                    target_position_value = basket.pv * size_pct * leverage
+                    logger.info(f"Increased leverage to {leverage:.2f}x to meet minimum contract size "
+                               f"for {market.decode()}/{code.decode()}")
 
         # Risk check with FALLBACK CHAIN (never fully block)
         can_enter, reason = self.risk_manager.can_enter_position(
@@ -1008,13 +1380,19 @@ class CompositeStrategy(csc3.composite_strategy):
         # Use signal price when basket.price not yet available
         trade_price = basket.price if basket.price > 0 else signal_data['close']
 
+        # Get leverage-adjusted risk parameters
+        stop_loss_pct = self.leverage_manager.get_stop_loss(leverage)
+        profit_target_pct = self.leverage_manager.get_profit_target(leverage)
+
         logger.info(f"{'LONG' if signal == 1 else 'SHORT'} basket {basket_idx} [{tier_name}]: "
                    f"{market.decode()}/{code.decode()}, size={size_pct*100:.0f}%, "
-                   f"lev={leverage:.2f}, price={trade_price:.2f}, "
+                   f"lev={leverage:.2f}x, stop={stop_loss_pct*100:.1f}%, "
+                   f"target={profit_target_pct*100:.0f}%, price={trade_price:.2f}, "
                    f"conv={conviction:.2f} (conf={confidence:.2f}, str={strength:.2f})")
 
-        # Store entry price for stop-loss tracking
+        # Store entry price and leverage for tracking
         self.entry_prices[basket_idx] = trade_price
+        self.active_leverages[basket_idx] = leverage
         self.total_trades_executed += 1
 
         # WOS pattern: _fit_position sets leverage, _signal enters position
@@ -1053,6 +1431,8 @@ class CompositeStrategy(csc3.composite_strategy):
         # Execute exit via framework (use exit_price with fallback)
         basket._signal(exit_price, basket.timetag, 0)
         self.entry_prices[basket_idx] = 0.0
+        self.active_leverages[basket_idx] = 1.0
+        self.trailing_stop_manager.reset(basket_idx)
         self.total_trades_closed += 1
 
     def _calculate_position_size(self, allocated_capital: float, current_price: float) -> int:
@@ -1125,6 +1505,28 @@ class CompositeStrategy(csc3.composite_strategy):
         # Should be ~10% with our 30/30/30/10 structure
         self.cash_reserve_pct = self.cash / self.pv if self.pv > 0 else 0
 
+        # Calculate leverage-weighted exposure (NEW)
+        positions = {}
+        for basket_idx in range(BASKET_COUNT):
+            basket = self.strategies[basket_idx]
+            if basket.signal != 0:
+                positions[basket_idx] = {
+                    'value': basket.pv,
+                    'leverage': self.active_leverages.get(basket_idx, 1.0)
+                }
+
+        _, self.leverage_weighted_exposure = self.risk_manager.check_leverage_weighted_exposure(
+            positions, self.pv
+        )
+
+        # Calculate average active leverage (NEW)
+        active_leverages = [
+            self.active_leverages.get(i, 1.0)
+            for i in range(BASKET_COUNT)
+            if self.strategies[i].signal != 0
+        ]
+        self.avg_active_leverage = sum(active_leverages) / len(active_leverages) if active_leverages else 1.0
+
         # Update per-basket metrics (for visualization)
         self.basket_0_pv = self.strategies[0].pv
         self.basket_1_pv = self.strategies[1].pv
@@ -1165,11 +1567,14 @@ class CompositeStrategy(csc3.composite_strategy):
         if self.bar_index % 10 == 0 or self.active_positions > 0:
             metrics = self.risk_manager.get_risk_metrics()
 
+            # Include leverage metrics in log
             logger.info(
                 f"[Bar {self.bar_index}] "
                 f"PV=¥{self.pv:,.0f}, NV={self.nv:.4f}, "
                 f"Active={self.active_positions}/3, "
                 f"Exposure={self.portfolio_exposure_pct*100:.1f}%, "
+                f"LevExp={self.leverage_weighted_exposure*100:.1f}%, "
+                f"AvgLev={self.avg_active_leverage:.2f}x, "
                 f"Cash={self.cash_reserve_pct*100:.1f}%, "
                 f"DD={metrics['current_drawdown']*100:.2f}%"
             )

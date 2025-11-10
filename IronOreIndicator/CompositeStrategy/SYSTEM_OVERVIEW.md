@@ -294,33 +294,36 @@ strength = signal_data['signal_strength']     # 0.0-1.0
 conviction = (confidence × 0.6) + (strength × 0.4)
 ```
 
-### Three Size Tiers
+### Three Size Tiers with Smart Leverage
 
 **STRONG Conviction (conviction ≥ 0.55)**
 ```
 Position Size: 80-100% of basket capital
-Leverage: 1.3-1.4x
-Example: ¥240k-¥300k × 1.4 = ¥336k-¥420k notional
+Smart Leverage: 4-10x (conviction-based, risk-adjusted)
+Example: ¥240k-¥300k × 8x = ¥1,920k-¥2,400k notional
 
 When: All indicators strongly aligned, high volume
+Risk: Tighter stops (1.5-2% vs 3%), earlier profit targets (7-8%)
 ```
 
 **MEDIUM Conviction (0.35 ≤ conviction < 0.55)**
 ```
 Position Size: 40-60% of basket capital
-Leverage: 1.1-1.2x
-Example: ¥120k-¥180k × 1.2 = ¥144k-¥216k notional
+Smart Leverage: 2.5-6x (conviction-based, risk-adjusted)
+Example: ¥120k-¥180k × 4x = ¥480k-¥720k notional
 
 When: Moderate signal quality, some confirmation
+Risk: Balanced stops (2-2.5%), standard profit targets (8-10%)
 ```
 
 **WEAK Conviction (0.20 ≤ conviction < 0.35)**
 ```
 Position Size: 20-30% of basket capital
-Leverage: 1.0-1.1x
-Example: ¥60k-¥90k × 1.05 = ¥63k-¥95k notional
+Smart Leverage: 1.5-4x (conviction-based, risk-adjusted)
+Example: ¥60k-¥90k × 2.5x = ¥150k-¥225k notional
 
 When: Signal present but weak, low confidence
+Risk: Conservative stops (2.5-3%), standard profit targets (10%)
 ```
 
 ### Size Calculation Formula
@@ -329,18 +332,39 @@ When: Signal present but weak, low confidence
 # Base size tier
 if conviction >= 0.55:
     size_pct = 0.80 + (conviction - 0.55) × 0.44  # 80-100%
+    tier = 'STRONG'
 elif conviction >= 0.35:
     size_pct = 0.40 + (conviction - 0.35) × 1.0   # 40-60%
+    tier = 'MEDIUM'
 else:
     size_pct = 0.20 + (conviction - 0.20) × 0.67  # 20-30%
+    tier = 'WEAK'
 
 # Risk adjustment for high volatility
 if chaos_baskets >= 2:
     size_pct *= 0.70  # Reduce by 30%
 
-# Leverage calculation
-leverage = 1.0 + (conviction × 1.4)
-leverage = min(leverage, 1.4)  # Cap at 1.4x
+# Smart leverage calculation (conviction-based, risk-adjusted)
+leverage = leverage_manager.calculate_leverage(
+    conviction=conviction,
+    tier=tier,
+    chaos_baskets=chaos_baskets,
+    portfolio_dd=current_drawdown,
+    daily_loss=daily_loss
+)
+
+# Leverage ranges by tier:
+# STRONG: 4-10x, MEDIUM: 2.5-6x, WEAK: 1.5-4x
+# Auto-adjusted down in high risk conditions
+
+# Ensure minimum contracts (especially for large contracts like copper)
+contract_size = price × multiplier  # e.g., ¥80,000 × 5 tons = ¥400,000
+min_position_value = contract_size × 1  # At least 1 contract
+
+if position_value < min_position_value:
+    # Increase leverage to achieve minimum
+    leverage = min_position_value / (basket.pv × size_pct)
+    leverage = min(leverage, 20.0)  # Hard cap
 
 # Final position value
 position_value = basket.pv × size_pct × leverage
@@ -362,11 +386,20 @@ Calculation:
   ✓ conviction >= 0.55 → STRONG tier
 
   size_pct = 0.80 + (0.692 - 0.55) × 0.44 = 0.862 (86.2%)
-  leverage = 1.0 + (0.692 × 1.4) = 1.969 → capped at 1.4
 
-  position_value = ¥300,000 × 0.862 × 1.4 = ¥362,040
+  # Smart leverage (STRONG tier: 4-10x range)
+  base_leverage = 1.0 + (0.692 × 12.86) = 9.90x
+  # No risk adjustments (no chaos, low DD, no daily loss)
+  leverage = 9.90x → capped at 10.0x (STRONG tier max)
 
-Result: LONG 86% of basket capital with 1.4x leverage
+  position_value = ¥300,000 × 0.862 × 9.90 = ¥2,561,940
+
+  # Risk parameters
+  stop_loss = 1.5% (tighter due to 10x leverage)
+  profit_target = 7% (earlier exit due to high leverage)
+
+Result: LONG 86% of basket capital with 9.90x leverage
+Notional: ¥2.56M (8.5x higher profit potential than old 1.4x system)
 ```
 
 ---
@@ -387,17 +420,62 @@ Check: sum(active_basket_values) / portfolio_value ≤ 0.90
 Prevents: Over-leverage across portfolio
 ```
 
-### Layer 2: Leverage Limit
+### Layer 2: Smart Leverage System
 
 ```
-Maximum Leverage per Basket: 1.4x
+Dynamic Leverage Ranges (conviction-based):
+  STRONG: 4-10x
+  MEDIUM: 2.5-6x
+  WEAK: 1.5-4x
 
-Check: position_value / basket_capital ≤ 1.4
+Hard Caps:
+  Absolute Maximum: 20x
+  Per-Basket Maximum: 15x
 
-Prevents: Excessive leverage on single position
+Risk Adjustments (multiplicative):
+  2+ chaos regimes: × 0.60 (reduce by 40%)
+  Portfolio DD > 5%: × 0.70 (reduce by 30%)
+  Daily loss > 2%: × 0.60 (reduce by 40%)
+
+Minimum Contract Guarantee:
+  Auto-increase leverage to ensure ≥1 contract trades
+  (Critical for large contracts like copper: 5 tons × ¥80k = ¥400k)
+
+Prevents: Under-trading small baskets, over-leveraging in bad conditions
 ```
 
-### Layer 3: Drawdown Limit
+### Layer 3: Leverage-Adjusted Stop Loss
+
+```
+Dynamic Stop-Loss (tighter at higher leverage):
+  ≤2x leverage: 3.0% stop
+  ≤4x leverage: 2.5% stop
+  ≤6x leverage: 2.0% stop
+  ≤10x leverage: 1.5% stop
+  >10x leverage: 1.0% stop
+
+Logic: Higher leverage = bigger impact from price moves
+       → Tighter stops protect capital
+
+Prevents: Excessive losses on high-leverage positions
+```
+
+### Layer 4: Trailing Stops (High Leverage Positions)
+
+```
+Activation: Leverage ≥ 5x AND profit ≥ 5%
+Trail Distance: 2% below peak price
+
+Example (LONG):
+  Entry: ¥800, Leverage: 8x
+  Price → ¥840 (+5%) → Trailing stop activates
+  Peak: ¥860 → Trail stop: ¥842.80 (2% below)
+  Exit: ¥842.80 → Lock in +5.35% profit
+
+Prevents: Giving back profits on high-leverage winners
+```
+
+### Layer 5: Drawdown Limit
 
 ```
 Maximum Portfolio Drawdown: 10%
@@ -405,9 +483,10 @@ Maximum Portfolio Drawdown: 10%
 Check: (peak_value - current_value) / peak_value ≤ 0.10
 
 Action: If breached, close ALL positions (circuit breaker)
+       Also reduces max leverage for future trades
 ```
 
-### Layer 4: Daily Loss Limit
+### Layer 6: Daily Loss Limit
 
 ```
 Maximum Daily Loss: 3%
@@ -415,20 +494,23 @@ Maximum Daily Loss: 3%
 Check: (day_start_value - current_value) / day_start_value ≤ 0.03
 
 Action: If breached, no new trades for rest of day
+       Reduces leverage by 60% for remaining positions
 ```
 
-### Layer 5: Position-Level Stop Loss
+### Layer 7: Leverage-Weighted Exposure
 
 ```
-Stop Loss per Position: 3%
+Maximum Leverage-Weighted Exposure: 90%
 
-Check: For LONG: (entry - current) / entry ≥ 0.03
-       For SHORT: (current - entry) / entry ≥ 0.03
+Formula: sum(position_value / leverage) / portfolio_value ≤ 0.90
 
-Action: Immediate exit
+Logic: Measures actual capital at risk, not notional value
+       Example: ¥300k position at 5x = ¥60k base exposure
+
+Prevents: Over-leveraging entire portfolio simultaneously
 ```
 
-### Layer 6: Dynamic Cash Reserve
+### Layer 8: Dynamic Cash Reserve
 
 ```
 Adaptive Cash Reserve:
@@ -441,7 +523,7 @@ Check: cash / portfolio_value ≥ target_reserve
 Ensures: Liquidity for rebalancing and exits
 ```
 
-### Layer 7: Chaos Regime Protection
+### Layer 9: Chaos Regime Protection
 
 ```
 Chaos Regime Detection:
@@ -449,9 +531,14 @@ Chaos Regime Detection:
 
 If chaos_baskets >= 2:
   - Reduce new position sizes by 30%
+  - Reduce leverage by 40% (multiplicative)
   - Exit losing positions (P&L < -1%)
 
+If chaos_baskets >= 1:
+  - Reduce leverage by 20%
+
 Prevents: Trading in highly volatile, directionless markets
+         Over-leveraging during unstable conditions
 ```
 
 ---
@@ -535,27 +622,78 @@ Result: Trade executed at reduced size instead of blocked
 
 Exits are **smarter than entries**. Multiple triggers protect profits and limit losses.
 
-### Exit Trigger 1: Profit Targets
+### Exit Trigger 0: Trailing Stop (High Leverage)
 
 ```
-10% Profit Target:
+Activation: Leverage >= 5x AND profit >= 5%
+Trail Distance: 2% below peak
+
+Example:
+  ├─ LONG at ¥800 with 8x leverage
+  ├─ Price hits ¥840 (+5%) → Trailing stop activates
+  ├─ Peak: ¥860 → Trail stop: ¥842.80
+  ├─ Price drops to ¥842.80 → EXIT
+  └─ Result: Lock in +5.35% profit
+
+Reason: Protect profits on high-leverage winners
+        Higher leverage = need to secure gains faster
+```
+
+### Exit Trigger 1: Leverage-Adjusted Profit Targets
+
+```
+Dynamic Profit Targets (based on leverage):
+
+High Leverage (≥5x):
+  ├─ Condition: P&L >= 7%
+  ├─ Action: FULL exit (100%)
+  └─ Reason: Earlier exit reduces risk on high-leverage positions
+
+Medium-High Leverage (≥3x):
+  ├─ Condition: P&L >= 8%
+  ├─ Action: FULL exit (100%)
+  └─ Reason: Balanced profit taking
+
+Standard Leverage (<3x):
   ├─ Condition: P&L >= 10%
   ├─ Action: FULL exit (100%)
   └─ Reason: Lock in substantial gains
 
-5% Profit Target (Conditional):
+5% Profit Protection (all leverage):
   ├─ Condition: P&L >= 5% AND conviction < 0.40
   ├─ Action: FULL exit (100%)
   └─ Reason: Protect gains when signal weakens
 ```
 
-### Exit Trigger 2: Stop Loss
+### Exit Trigger 2: Leverage-Adjusted Stop Loss
 
 ```
-3% Stop Loss:
-  ├─ Condition: P&L <= -3%
+Dynamic Stop-Loss (tighter at higher leverage):
+
+High Leverage (>10x):
+  ├─ Condition: P&L <= -1.0%
   ├─ Action: IMMEDIATE full exit
-  └─ Reason: Limit losses per position
+  └─ Reason: Very tight control on extreme leverage
+
+Medium-High Leverage (6-10x):
+  ├─ Condition: P&L <= -1.5%
+  ├─ Action: IMMEDIATE full exit
+  └─ Reason: Tight control on high leverage
+
+Medium Leverage (4-6x):
+  ├─ Condition: P&L <= -2.0%
+  ├─ Action: IMMEDIATE full exit
+  └─ Reason: Balanced risk management
+
+Low-Medium Leverage (2-4x):
+  ├─ Condition: P&L <= -2.5%
+  ├─ Action: IMMEDIATE full exit
+  └─ Reason: More room for normal volatility
+
+Low Leverage (<2x):
+  ├─ Condition: P&L <= -3.0%
+  ├─ Action: IMMEDIATE full exit
+  └─ Reason: Standard stop loss
 ```
 
 ### Exit Trigger 3: Signal Reversal
@@ -595,17 +733,23 @@ High Volatility Exit:
 ```
 FOR each basket with active position:
 
+0. Update trailing stop (if leverage >= 5x)
+   ├─ Update peak price and trail stop level
+   └─ Check if trailing stop hit: EXIT [trailing_stop]
+
 1. Calculate P&L
    ├─ For LONG: (current - entry) / entry
    └─ For SHORT: (entry - current) / entry
 
-2. Check profit targets
-   ├─ IF P&L >= 10%: EXIT [profit_target_10pct]
+2. Check leverage-adjusted profit targets
+   ├─ Get profit target based on leverage (7-10%)
+   ├─ IF P&L >= profit_target: EXIT [profit_target_Npct]
    ├─ IF P&L >= 5% AND conviction < 0.40: EXIT [profit_protect_5pct]
    └─ ELSE: Continue
 
-3. Check stop loss
-   ├─ IF P&L <= -3%: EXIT [stop_loss]
+3. Check leverage-adjusted stop loss
+   ├─ Get stop loss based on leverage (1.0-3.0%)
+   ├─ IF P&L <= -stop_loss: EXIT [stop_loss_Npct]
    └─ ELSE: Continue
 
 4. Check signal reversal
@@ -662,30 +806,40 @@ Basket Capitals: ¥300k each (all flat)
 
 2. Determine tier: STRONG (conviction >= 0.55)
    size_pct = 0.80 + (0.696 - 0.55) × 0.44 = 0.864 (86%)
-   leverage = 1.0 + (0.696 × 1.4) = 1.974 → capped at 1.4
 
-3. Position value:
-   ¥300,000 × 0.864 × 1.4 = ¥362,880
+3. Smart leverage calculation:
+   base_leverage = 1.0 + (0.696 × 12.86) = 9.95x
+   # No risk adjustments (no chaos, low DD, no daily loss)
+   leverage = 9.95x → capped at 10.0x (STRONG tier max)
 
-4. Risk checks:
-   - Total exposure: 36.3% < 90% ✓
+4. Position value:
+   ¥300,000 × 0.864 × 9.95 = ¥2,578,080
+
+5. Risk parameters:
+   stop_loss = 1.5% (tighter due to 10x leverage)
+   profit_target = 7% (earlier exit due to high leverage)
+
+6. Risk checks:
+   - Leverage-weighted exposure: 25.8% < 90% ✓
    - Drawdown: 0% < 10% ✓
    - Daily loss: 0% < 3% ✓
 
-5. EXECUTE
+7. EXECUTE
 ```
 
 **Log Output**:
 ```
-[09:00] LONG basket 0 [STRONG]: DCE/i, size=86%, lev=1.4,
-        price=765.00, conv=0.70 (conf=0.68, str=0.72)
+[09:00] LONG basket 0 [STRONG]: DCE/i, size=86%, lev=9.95x,
+        stop=1.5%, target=7%, price=765.00,
+        conv=0.70 (conf=0.68, str=0.72)
 ```
 
 **Updated State**:
 ```
 Active Positions: 1
-Basket 0: LONG i2501 @ 765.0, size=¥362,880
-Portfolio Exposure: 36.3%
+Basket 0: LONG i2501 @ 765.0, notional=¥2,578,080
+Portfolio Exposure: 25.8% (leverage-weighted)
+Average Leverage: 9.95x
 ```
 
 ---
@@ -710,29 +864,44 @@ Portfolio Exposure: 36.3%
 
 2. Determine tier: MEDIUM (0.35 ≤ conviction < 0.55)
    size_pct = 0.40 + (0.528 - 0.35) × 1.0 = 0.578 (58%)
-   leverage = 1.0 + (0.528 × 1.4) = 1.739 → capped at 1.4
 
-3. Position value:
-   ¥300,000 × 0.578 × 1.4 = ¥242,760
+3. Smart leverage calculation:
+   base_leverage = 1.0 + (0.528 × 10.0) = 6.28x
+   # No risk adjustments
+   leverage = 6.28x → capped at 6.0x (MEDIUM tier max)
 
-4. Risk checks:
-   - Total exposure: 60.6% < 90% ✓
+4. Position value:
+   ¥300,000 × 0.578 × 6.0 = ¥1,040,400
 
-5. EXECUTE
+5. Minimum contract check:
+   contract_size = 76,770 × 5 = ¥383,850
+   min_position = ¥383,850 × 1 = ¥383,850
+   ✓ ¥1,040,400 > ¥383,850 → 2.7 contracts → 2 contracts
+
+6. Risk parameters:
+   stop_loss = 2.0% (tighter due to 6x leverage)
+   profit_target = 8% (earlier exit due to medium-high leverage)
+
+7. Risk checks:
+   - Leverage-weighted exposure: 43.1% < 90% ✓
+
+8. EXECUTE
 ```
 
 **Log Output**:
 ```
-[09:30] SHORT basket 1 [MEDIUM]: SHFE/cu, size=58%, lev=1.4,
-        price=76770.00, conv=0.53 (conf=0.58, str=0.45)
+[09:30] SHORT basket 1 [MEDIUM]: SHFE/cu, size=58%, lev=6.00x,
+        stop=2.0%, target=8%, price=76770.00,
+        conv=0.53 (conf=0.58, str=0.45)
 ```
 
 **Updated State**:
 ```
 Active Positions: 2
-Basket 0: LONG i2501 @ 765.0
-Basket 1: SHORT cu2412 @ 76770.0
-Portfolio Exposure: 60.6%
+Basket 0: LONG i2501 @ 765.0, lev=9.95x
+Basket 1: SHORT cu2412 @ 76770.0, lev=6.0x
+Portfolio Exposure: 43.1% (leverage-weighted)
+Average Leverage: 7.98x
 ```
 
 ---
@@ -741,36 +910,39 @@ Portfolio Exposure: 60.6%
 
 **Price Movement**:
 ```
-Iron ore: 765.0 → 842.5 (+10.1%)
+Iron ore: 765.0 → 818.5 (+7.0%)
 ```
 
 **Exit Trigger Check**:
 ```
-P&L = (842.5 - 765.0) / 765.0 = 0.101 (10.1%)
+P&L = (818.5 - 765.0) / 765.0 = 0.070 (7.0%)
+Leverage = 9.95x
+Profit Target = 7% (for high leverage ≥5x)
 
-✓ P&L >= 10% → Trigger: Profit Target
+✓ P&L >= 7% → Trigger: Leverage-Adjusted Profit Target
 ```
 
 **Log Output**:
 ```
-[12:45] PROFIT TARGET: Basket 0 (DCE/i) hit 10% profit (10.1%)
-[12:45] CLOSE basket 0 [profit_target_10pct]: DCE/i, LONG
-        entry=765.00, exit=842.50, P&L=+10.1%
+[12:45] PROFIT TARGET: Basket 0 (DCE/i) hit 7% profit (7.0%) at 9.95x leverage
+[12:45] CLOSE basket 0 [profit_target_7pct]: DCE/i, LONG
+        entry=765.00, exit=818.50, P&L=+7.0%
 ```
 
 **P&L Calculation**:
 ```
-Entry: ¥362,880
-Exit: ¥399,548
-Realized P&L: +¥36,668
+Notional Entry: ¥2,578,080 (with 9.95x leverage)
+Base Capital: ¥259,000 (¥2,578,080 / 9.95)
+Realized P&L: ¥259,000 × 0.070 × 9.95 = +¥180,365
+(7% price move × 9.95x leverage = 69.7% return on base capital)
 ```
 
 **Updated State**:
 ```
 Active Positions: 1
-Basket 0: FLAT (¥336,668 capital now)
-Basket 1: SHORT cu2412 @ 76770.0
-Portfolio Value: ¥1,036,668
+Basket 0: FLAT (¥480,365 capital now, +¥180,365 profit)
+Basket 1: SHORT cu2412 @ 76770.0, lev=6.0x
+Portfolio Value: ¥1,180,365
 ```
 
 ---
@@ -779,36 +951,41 @@ Portfolio Value: ¥1,036,668
 
 **Price Movement**:
 ```
-Copper: 76770.0 → 79105.0 (+3.04%)
-For SHORT: P&L = (76770 - 79105) / 76770 = -3.04%
+Copper: 76770.0 → 78306.0 (+2.0%)
+For SHORT: P&L = (76770 - 78306) / 76770 = -2.0%
 ```
 
 **Exit Trigger Check**:
 ```
-P&L = -3.04%
+P&L = -2.0%
+Leverage = 6.0x
+Stop Loss = 2.0% (for 6x leverage)
 
-✓ P&L <= -3% → Trigger: Stop Loss
+✓ P&L <= -2.0% → Trigger: Leverage-Adjusted Stop Loss
 ```
 
 **Log Output**:
 ```
-[15:00] STOP-LOSS: Basket 1 (SHFE/cu) hit 3% loss (-3.04%)
-[15:00] CLOSE basket 1 [stop_loss]: SHFE/cu, SHORT
-        entry=76770.00, exit=79105.00, P&L=-3.04%
+[15:00] STOP-LOSS: Basket 1 (SHFE/cu) hit 2.0% loss (-2.0%) at 6.0x leverage
+[15:00] CLOSE basket 1 [stop_loss_2pct]: SHFE/cu, SHORT
+        entry=76770.00, exit=78306.00, P&L=-2.0%
 ```
 
 **P&L Calculation**:
 ```
-Entry: ¥242,760
-Exit: ¥235,380
-Realized P&L: -¥7,380
+Notional Entry: ¥1,040,400 (with 6.0x leverage)
+Base Capital: ¥173,400 (¥1,040,400 / 6.0)
+Realized P&L: ¥173,400 × 0.020 × 6.0 = -¥20,808
+(2% price move × 6.0x leverage = 12% loss on base capital)
 ```
 
 **Updated State**:
 ```
 Active Positions: 0
-Portfolio Value: ¥1,029,288
-Net P&L for day: +¥29,288 (+2.93%)
+Basket 0: FLAT (¥480,365 capital, +¥180,365 profit)
+Basket 1: FLAT (¥279,192 capital, -¥20,808 loss)
+Portfolio Value: ¥1,159,557
+Net P&L for day: +¥159,557 (+15.96%)
 ```
 
 ---
@@ -817,21 +994,30 @@ Net P&L for day: +¥29,288 (+2.93%)
 
 **Trades Executed**:
 ```
-1. Iron Ore LONG (STRONG tier, 86% size)
-   → +10.1% profit = +¥36,668
+1. Iron Ore LONG (STRONG tier, 86% size, 9.95x leverage)
+   → +7.0% price move × 9.95x leverage = +69.7% return
+   → Profit: +¥180,365
 
-2. Copper SHORT (MEDIUM tier, 58% size)
-   → -3.04% loss = -¥7,380
+2. Copper SHORT (MEDIUM tier, 58% size, 6.0x leverage)
+   → -2.0% price move × 6.0x leverage = -12.0% loss
+   → Loss: -¥20,808
 
-Net Result: +¥29,288 (+2.93%)
+Net Result: +¥159,557 (+15.96% portfolio return)
 ```
 
 **Key Observations**:
-- Different position sizes based on conviction
+- Smart leverage amplified profits: 7% move → 69.7% return (9.95x)
+- Different leverage based on conviction (STRONG=10x, MEDIUM=6x)
+- Leverage-adjusted exits: 7% target (vs 10%), 2% stop (vs 3%)
+- Tighter risk controls protected capital on losing trade
 - Diversified (LONG + SHORT)
-- Profit target protected gains
-- Stop loss limited damage
-- System working as designed ✓
+- Net positive despite 1 winner, 1 loser
+- System working as designed with smart leverage ✓
+
+**Comparison to Old System (1.4x fixed leverage)**:
+- Old Iron Ore profit: +¥36,668 (10.1% move × 1.4x)
+- New Iron Ore profit: +¥180,365 (7% move × 9.95x)
+- **5x more profit with earlier exit and tighter stops**
 
 ---
 
@@ -841,26 +1027,37 @@ Net Result: +¥29,288 (+2.93%)
 - Tier-1: Signal generation (technical analysis)
 - Tier-2: Portfolio management (risk & execution)
 
-### 2. **Graduated Position Sizing**
+### 2. **Graduated Position Sizing with Smart Leverage**
 - Not binary (all-or-nothing)
 - Size scales with signal quality
 - 3 tiers: STRONG (80-100%), MEDIUM (40-60%), WEAK (20-30%)
+- Smart leverage scales with conviction:
+  - STRONG: 4-10x (high confidence = high leverage)
+  - MEDIUM: 2.5-6x (moderate confidence)
+  - WEAK: 1.5-4x (low confidence)
+- Auto-adjusts for risk conditions (chaos, drawdown, daily loss)
 
 ### 3. **Multi-Layer Risk Management**
-- 7 independent risk controls
+- 9 independent risk controls
 - Portfolio-level AND position-level
+- Leverage-adjusted stops and targets
+- Trailing stops for high-leverage positions
+- Leverage-weighted exposure tracking
 - Circuit breakers for extreme scenarios
 
 ### 4. **Adaptive Behavior**
 - Reduce sizes in high volatility
+- Reduce leverage in bad conditions (chaos, drawdown, daily loss)
 - Dynamic cash reserves
 - Fallback chains prevent unnecessary blocks
+- Auto-increase leverage to meet minimum contracts
 
-### 5. **Smart Exits**
-- Multiple exit triggers
-- Protect profits (10%, 5% targets)
-- Limit losses (3% stop)
-- React to signal changes
+### 5. **Smart Exits with Leverage Awareness**
+- Multiple exit triggers (6 types)
+- Leverage-adjusted profit targets (7-10%, earlier for high leverage)
+- Leverage-adjusted stop losses (1-3%, tighter for high leverage)
+- Trailing stops for high-leverage winners (5x+ leverage)
+- React to signal changes and confidence degradation
 
 ### 6. **Independent Baskets**
 - Each commodity managed separately
@@ -952,8 +1149,39 @@ STRONG_THRESHOLD = 0.55    # 80-100% size
 MEDIUM_THRESHOLD = 0.35    # 40-60% size
 WEAK_THRESHOLD = 0.20      # 20-30% size
 
-# Leverage
-MAX_LEVERAGE = 1.4
+# Smart Leverage Ranges
+LEVERAGE_TIERS = {
+    'STRONG': {'min': 4.0, 'max': 10.0, 'multiplier': 12.86},
+    'MEDIUM': {'min': 2.5, 'max': 6.0, 'multiplier': 10.0},
+    'WEAK': {'min': 1.5, 'max': 4.0, 'multiplier': 10.0},
+}
+
+# Hard Caps
+MAX_LEVERAGE = 20.0          # Absolute maximum
+MAX_BASKET_LEVERAGE = 15.0   # Per-basket maximum
+
+# Leverage-Adjusted Stop Loss
+STOP_LOSS_TIERS = [
+    (2.0, 0.030),   # Up to 2x: 3.0% stop
+    (4.0, 0.025),   # Up to 4x: 2.5% stop
+    (6.0, 0.020),   # Up to 6x: 2.0% stop
+    (10.0, 0.015),  # Up to 10x: 1.5% stop
+    (20.0, 0.010),  # Above 10x: 1.0% stop
+]
+
+# Leverage-Adjusted Profit Targets
+PROFIT_TARGETS = [
+    (5.0, 0.07),    # 5x+: 7% target
+    (3.0, 0.08),    # 3x+: 8% target
+    (0.0, 0.10),    # Default: 10% target
+]
+
+# Trailing Stop
+TRAILING_STOP_ACTIVATION_LEV = 5.0   # Activate at 5x+ leverage
+TRAILING_STOP_ACTIVATION_PROFIT = 0.05  # Activate at 5% profit
+TRAILING_STOP_DISTANCE = 0.02        # Trail 2% below peak
+
+# Weights
 CONFIDENCE_WEIGHT = 0.6
 STRENGTH_WEIGHT = 0.4
 ```
@@ -962,15 +1190,22 @@ STRENGTH_WEIGHT = 0.4
 
 ```python
 # Portfolio limits
-MAX_TOTAL_EXPOSURE = 0.90    # 90%
-MIN_CASH_RESERVE = 0.10      # 10%
-MAX_PORTFOLIO_DD = 0.10      # 10%
-MAX_DAILY_LOSS = 0.03        # 3%
+MAX_TOTAL_EXPOSURE = 0.90           # 90% (leverage-weighted)
+MIN_CASH_RESERVE = 0.10             # 10%
+MAX_PORTFOLIO_DD = 0.10             # 10%
+MAX_DAILY_LOSS = 0.03               # 3%
 
-# Position limits
-STOP_LOSS = 0.03             # 3%
-PROFIT_TARGET_1 = 0.10       # 10%
-PROFIT_TARGET_2 = 0.05       # 5%
+# Position limits (leverage-adjusted)
+STOP_LOSS_RANGE = (0.010, 0.030)   # 1.0-3.0% (based on leverage)
+PROFIT_TARGET_RANGE = (0.07, 0.10) # 7-10% (based on leverage)
+PROFIT_PROTECT = 0.05               # 5% (with low conviction)
+
+# Contract Multipliers (for minimum contract sizing)
+CONTRACT_MULTIPLIERS = {
+    'DCE/i': 100,    # Iron Ore: 100 tons
+    'SHFE/cu': 5,    # Copper: 5 tons
+    'DCE/m': 10,     # Soybean: 10 tons
+}
 ```
 
 ### Cash Reserve Targets
