@@ -149,47 +149,26 @@ class {{NAME}}DataFetcher:
         self.client.markets = [market]
         self.client.codes = [code]
 
-        # Fetch data
+        # Fetch data - returns List[Dict]
         ret = await self.client.save_by_symbol()
-        data = ret[1][1]  # Extract data from result tuple
+        data = ret[1][1]  # Extract List[Dict] from result tuple
 
         if not data:
             print(f"⚠ No data returned for {market}/{code}")
             return pd.DataFrame()
 
-        # Convert to DataFrame
-        rows = []
-        for sv_obj in data:
-            row = {}
+        # Convert List[Dict] to DataFrame
+        # Each dict contains header fields (time_tag, granularity, market, code, namespace)
+        # plus all fields from uout.json
+        df = pd.DataFrame(data)
 
-            # Extract all fields from sv_object
-            for field in dir(sv_obj):
-                if field.startswith('_') or callable(getattr(sv_obj, field)):
-                    continue
+        # Store available fields (exclude header fields)
+        header_fields = ['time_tag', 'granularity', 'market', 'code', 'namespace']
+        self.available_fields = [col for col in df.columns if col not in header_fields]
 
-                try:
-                    value = getattr(sv_obj, field)
-                    # Convert bytes to string if needed
-                    if isinstance(value, bytes):
-                        value = value.decode('utf-8')
-                    # Convert lists to strings for DataFrame compatibility
-                    if isinstance(value, (list, tuple)):
-                        value = str(value)
-                    row[field] = value
-                except (AttributeError, Exception):
-                    row[field] = None
-
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-
-        # Store available fields
-        self.available_fields = [col for col in df.columns
-                                if col not in ['timetag', 'bar_index']]
-
-        # Convert timetag to datetime if present
-        if 'timetag' in df.columns:
-            df['datetime'] = pd.to_datetime(df['timetag'].astype(str), format='%Y%m%d%H%M%S', errors='coerce')
+        # Convert time_tag (unix ms) to datetime
+        if 'time_tag' in df.columns:
+            df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')
             df = df.sort_values('datetime')
 
         self.df = df

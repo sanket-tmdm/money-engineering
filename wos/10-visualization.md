@@ -17,9 +17,22 @@ Visualization fetches calculated StructValues from server to analyze indicator b
 
 ## The svr3 Module
 
-**Purpose**: Async module for fetching calculated indicator StructValues from server.
+**Purpose**: Async module for fetching calculated indicator data from server.
 
 **Use Case**: Query any indicator or composite strategy's performance metrics for tuning.
+
+### Data Format
+
+**save_by_symbol() returns**: `List[Dict]` where each dict contains:
+
+| Field Category | Fields | Description |
+|----------------|--------|-------------|
+| **Header Fields** | `time_tag`, `granularity`, `market`, `code`, `namespace` | Automatically included for all rows |
+| **Custom Fields** | All fields from uout.json | Your indicator's output fields |
+
+**time_tag Format**: Unix timestamp in milliseconds (e.g., `1672761600000`)
+
+**Usage Note**: Use `time_tag` directly for time-series x-axis - automatically skips weekends/holidays.
 
 ### StructValue Indexing
 
@@ -105,13 +118,13 @@ class IndicatorFetcher:
         await client.shakehand()
 
         ret = await client.save_by_symbol()
-        data = ret[1][1]  # Extract data from result tuple
+        data = ret[1][1]  # Extract List[Dict] from result tuple
 
         # Cleanup
         client.stop()
         await client.join()
 
-        return data
+        return data  # List[Dict] with header fields + uout.json fields
 
 # Usage (Interactive Mode - VS Code/Cursor notebooks)
 if __name__ == '__main__':
@@ -174,7 +187,7 @@ class MultiFetcher:
         self.client.codes = [instrument]
 
         ret = await self.client.save_by_symbol()
-        return ret[1][1]
+        return ret[1][1]  # List[Dict] with header + custom fields
 
     async def close(self):
         """Clean up connection"""
@@ -280,9 +293,15 @@ class IndicatorVisualizer:
         self.client.codes = [code]
 
         ret = await self.client.save_by_symbol()
-        data = ret[1][1]
+        data = ret[1][1]  # List[Dict] with header + custom fields
 
-        return pd.DataFrame(data)
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
+
+        # Convert time_tag (unix ms) to datetime for plotting
+        df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')
+
+        return df
 
     async def close(self):
         """Cleanup"""
@@ -291,13 +310,13 @@ class IndicatorVisualizer:
         await self.client.join()
 
 def plot_indicator_signals(df):
-    """Plot indicator signals over time."""
+    """Plot indicator signals over time (x-axis naturally skips weekends/holidays)."""
     fig, axes = plt.subplots(3, 1, figsize=(15, 10))
 
     # Plot 1: EMAs and Price
     ax1 = axes[0]
-    ax1.plot(df['timestamp'], df['ema_fast'], label='EMA Fast', color='blue')
-    ax1.plot(df['timestamp'], df['ema_slow'], label='EMA Slow', color='red')
+    ax1.plot(df['datetime'], df['ema_fast'], label='EMA Fast', color='blue')
+    ax1.plot(df['datetime'], df['ema_slow'], label='EMA Slow', color='red')
     ax1.set_ylabel('Price')
     ax1.legend()
     ax1.set_title('EMA Indicators')
@@ -305,7 +324,7 @@ def plot_indicator_signals(df):
 
     # Plot 2: Signals
     ax2 = axes[1]
-    ax2.scatter(df['timestamp'], df['signal'], c=df['signal'], 
+    ax2.scatter(df['datetime'], df['signal'], c=df['signal'],
                 cmap='RdYlGn', alpha=0.6)
     ax2.set_ylabel('Signal')
     ax2.set_ylim(-1.5, 1.5)
@@ -315,7 +334,7 @@ def plot_indicator_signals(df):
 
     # Plot 3: Confidence
     ax3 = axes[2]
-    ax3.fill_between(df['timestamp'], 0, df['confidence'], 
+    ax3.fill_between(df['datetime'], 0, df['confidence'],
                      alpha=0.3, color='green')
     ax3.set_xlabel('Time')
     ax3.set_ylabel('Confidence')
@@ -375,13 +394,13 @@ if __name__ == "__main__":
 
 ```python
 def plot_time_series(df):
-    """Plot all indicator values over time."""
+    """Plot all indicator values over time (x-axis skips weekends/holidays)."""
     fields = ['ema_fast', 'ema_slow', 'tsi', 'vai', 'mdi']
 
     fig, axes = plt.subplots(len(fields), 1, figsize=(15, 3*len(fields)))
 
     for i, field in enumerate(fields):
-        axes[i].plot(df['timestamp'], df[field])
+        axes[i].plot(df['datetime'], df[field])
         axes[i].set_title(f'{field.upper()}')
         axes[i].grid(True)
 
@@ -407,7 +426,7 @@ def analyze_correlations(df):
 
 ```python
 def analyze_signal_performance(df):
-    """Analyze signal performance."""
+    """Analyze signal performance (x-axis skips weekends/holidays)."""
     # Calculate returns
     df['returns'] = df['close'].pct_change()
 
@@ -418,7 +437,7 @@ def analyze_signal_performance(df):
     cumulative = (1 + df['signal_returns']).cumprod()
 
     plt.figure(figsize=(12, 6))
-    plt.plot(df['timestamp'], cumulative)
+    plt.plot(df['datetime'], cumulative)
     plt.title('Cumulative Strategy Returns')
     plt.xlabel('Time')
     plt.ylabel('Cumulative Return')
@@ -521,10 +540,67 @@ tier2_query = ("DCE", "COMPOSITE<00>")  # Or whatever placeholder in uout.json
 
 ---
 
+## Data Format and Time Handling
+
+### Returned Data Structure
+
+**save_by_symbol() returns**: `List[Dict]` where each dictionary contains:
+
+```python
+{
+    # Header fields (automatically included)
+    'time_tag': 1672761600000,      # Unix timestamp in milliseconds
+    'granularity': 900,              # Granularity in seconds
+    'market': 'SHFE',                # Market identifier
+    'code': 'cu<00>',                # Instrument code
+    'namespace': 'private',          # Namespace
+
+    # Custom fields from uout.json
+    'ema_fast': 123.45,
+    'ema_slow': 120.30,
+    'signal': 1.0,
+    # ... all other fields defined in uout.json
+}
+```
+
+### Time Axis Best Practice
+
+**Critical**: Use `time_tag` for x-axis to naturally skip weekends/holidays.
+
+```python
+# Convert to DataFrame
+df = pd.DataFrame(data)
+
+# Convert time_tag (unix ms) to datetime
+df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')
+
+# Plot time series (automatically skips weekends/holidays)
+plt.plot(df['datetime'], df['my_field'])
+plt.xlabel('Time')
+plt.show()
+```
+
+**Why this works**: The returned data only contains bars where market was open. Using `time_tag` directly creates properly spaced x-axis without manual weekend/holiday filtering.
+
+**Anti-pattern** ❌:
+```python
+# DON'T create artificial continuous time axis
+date_range = pd.date_range(start, end, freq='15min')  # Includes weekends!
+```
+
+**Best practice** ✅:
+```python
+# DO use actual time_tag values from data
+df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')  # Only market hours
+```
+
+---
+
 ## Summary
 
 **Core Concepts**:
-- svr3 async module fetches calculated StructValues from server
+- svr3 async module fetches calculated data from server as `List[Dict]`
+- Each dict contains header fields (`time_tag`, `granularity`, `market`, `code`, `namespace`) + custom fields from uout.json
 - Tier-1: Multiple (market, commodity) outputs → pick ONE for visualization
 - Tier-2: Single placeholder output → use market + placeholder from uout.json
 - Connection lifecycle: connect() → fetch() → close()
@@ -534,10 +610,12 @@ tier2_query = ("DCE", "COMPOSITE<00>")  # Or whatever placeholder in uout.json
 1. Use `svr3.sv_reader()` with 12 parameters (not `svr3.Client()`)
 2. Set `client.token` after creation
 3. Call `login() → connect() → ws_loop() → shakehand()` before fetching
-4. Use `client.save_by_symbol()` to fetch data, result in `ret[1][1]`
-5. Call `client.stop()` and `await client.join()` for cleanup
-6. Match market/code with uout.json securities field
-7. Use async/await patterns (interactive vs regular mode)
+4. Use `client.save_by_symbol()` to fetch data, result in `ret[1][1]` (List[Dict])
+5. Convert `time_tag` (unix ms) to datetime: `pd.to_datetime(df['time_tag'], unit='ms')`
+6. Use `time_tag`-derived datetime for x-axis (auto-skips weekends/holidays)
+7. Call `client.stop()` and `await client.join()` for cleanup
+8. Match market/code with uout.json securities field
+9. Use async/await patterns (interactive vs regular mode)
 
 **Key Tools**:
 - svr3: Server data fetching

@@ -2,15 +2,19 @@
 
 ## Version 1.2.5 (2025-01-07)
 
-### 📊 Critical Fix: Visualization Documentation - svr3 Module and Output Patterns
+### 📊 Critical Fix: Visualization Documentation and Templates - svr3 Module Corrections
 
 **What Changed:**
 
-Corrected Chapter 10 (Visualization) and enhanced Chapter 02 (uin-and-uout) with accurate svr3 usage patterns and Tier-1 vs Tier-2 output semantics.
+1. Corrected Chapter 10 (Visualization) and Chapter 02 (uin-and-uout) with accurate svr3 usage patterns
+2. **Rewrote visualization template** (`indicator_viz.py.template`) with correct svr3 API and proper patterns
+3. **Data format correction**: Documented that `save_by_symbol()` returns `List[Dict]` with header fields + custom fields
+4. **Time axis guidance**: Use `time_tag` (unix ms) for x-axis to naturally skip weekends/holidays
+5. All new projects will automatically get high-quality visualization scripts
 
 **Why This Matters:**
 
-Documentation showed incorrect `svr3.Client()` API that doesn't exist, causing developers to fail at fetching calculated indicator data. Missing explanation of Tier-1 (multiple outputs) vs Tier-2 (single placeholder) patterns caused wrong market/code queries.
+Documentation showed incorrect `svr3.Client()` API that doesn't exist, causing developers to fail at fetching calculated indicator data. Missing explanation of Tier-1 (multiple outputs) vs Tier-2 (single placeholder) patterns caused wrong market/code queries. Data format was incorrectly described as StructValues instead of List[Dict].
 
 **Critical Corrections:**
 
@@ -76,6 +80,42 @@ client.token = token
 | No guidance on market/code selection | Selection strategy for each tier |
 | Developers query wrong combinations | Know to pick ONE commodity (Tier-1) or use placeholder (Tier-2) |
 
+**Data Format and Time Axis Corrections:**
+
+**Returned Data Format**:
+```python
+# CORRECT: save_by_symbol() returns List[Dict]
+data = ret[1][1]  # List[Dict]
+
+# Each dict contains:
+{
+    'time_tag': 1672761600000,  # Unix ms (header field)
+    'granularity': 900,           # Header field
+    'market': 'SHFE',             # Header field
+    'code': 'cu<00>',             # Header field
+    'namespace': 'private',       # Header field
+    'ema_fast': 123.45,           # Custom field from uout.json
+    'signal': 1.0,                # Custom field from uout.json
+    # ... all other fields from uout.json
+}
+```
+
+**Time Axis Handling**:
+```python
+# CORRECT: Convert time_tag (unix ms) to datetime
+df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')
+
+# Use datetime for plots (auto-skips weekends/holidays)
+plt.plot(df['datetime'], df['my_field'])
+```
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| **Data Format** | Described as StructValues | Correctly documented as List[Dict] |
+| **Header Fields** | Not mentioned | time_tag, granularity, market, code, namespace |
+| **time_tag Format** | Not specified | Unix timestamp in milliseconds |
+| **Time Axis** | No guidance | Use time_tag → datetime for natural weekend/holiday skipping |
+
 **Doctrines Applied:**
 
 1. ✅ **Precision + Conciseness**: Tables and structured formats
@@ -83,6 +123,29 @@ client.token = token
 3. ✅ **Structured Formats**: 5 tables, 6 code examples (minimal, targeted)
 4. ✅ **Separation of Concerns**: WHAT (API contract) vs HOW (usage patterns)
 5. ✅ **Reference Pattern**: Cross-reference between chapters
+
+**3. Visualization Template (Lines 1-507)**
+
+| Section | Content |
+|---------|---------|
+| **Configuration** | Server endpoints, date range, Tier-1/Tier-2 commodity selection |
+| **DataFetcher Class** | Proper svr3.sv_reader() with 12 parameters, connection lifecycle |
+| **Connection Pattern** | connect() → login → connect → ws_loop → shakehand |
+| **Fetch Pattern** | save_by_symbol() with result extraction from ret[1][1] |
+| **Cleanup Pattern** | stop() → join() |
+| **Async Compatibility** | Works in interactive (await) and regular (asyncio.run) modes |
+| **Visualizations** | Time series, distributions, correlation matrix |
+| **Auto-save Plots** | PNG files with date range in filename |
+
+**Template Features**:
+- Correct svr3.sv_reader() signature (12 parameters)
+- Proper connection lifecycle management
+- List[Dict] data format handling (header fields + custom fields)
+- time_tag (unix ms) → datetime conversion for natural weekend/holiday skipping
+- Compatible with both async modes
+- Tier-1 and Tier-2 usage examples in comments
+- Error handling and cleanup
+- Professional visualization with saved PNG outputs
 
 **Files Modified:**
 
@@ -98,6 +161,14 @@ client.token = token
   - Tables for multiplicity and Tier-1 vs Tier-2 comparison
   - securities field semantics clarification
   - Query examples with cross-reference
+- `templates/indicator_viz.py.template`: Complete rewrite (~507 lines)
+  - Correct svr3.sv_reader() API with all 12 parameters
+  - Proper connection lifecycle (login → connect → ws_loop → shakehand)
+  - Pattern 2 implementation (connection reuse)
+  - Automatic field detection and DataFrame conversion
+  - Time series, distribution, and correlation plots
+  - Interactive and regular mode compatibility
+  - Professional error handling and cleanup
 
 **Quality:**
 
@@ -120,12 +191,13 @@ client.token = token
 
 **Critical Bug Prevention:**
 
-This documentation fix enables developers to:
+This documentation and template fix enables developers to:
 1. Successfully import and use svr3 module
 2. Fetch calculated indicator data from server
 3. Understand output multiplicity (Tier-1 vs Tier-2)
 4. Query correct market/code combinations
 5. Implement visualization scripts that work
+6. **Get working visualization scripts automatically** when creating new projects
 
 ---
 
