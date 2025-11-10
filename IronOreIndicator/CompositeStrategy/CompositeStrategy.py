@@ -768,7 +768,7 @@ class CompositeStrategy(csc3.composite_strategy):
         self.base_allocation_pct = 0.25
         self.max_allocation_pct = 0.35
         self.min_cash_reserve_pct = 0.10  # 10% min cash (target: 90% invested)
-        self.max_leverage = 5.0  # Conservative allocation leverage (allows copper trading without over-leverage risk)
+        self.max_leverage = 1.5  # Fixed allocation leverage (WOS framework uses this for ALL trades)
 
         # Risk manager
         self.risk_manager = RiskManager(initial_cash)
@@ -822,8 +822,9 @@ class CompositeStrategy(csc3.composite_strategy):
 
             # ONE-TIME allocation per basket (framework constraint)
             # This permanently transfers capital from composite to basket
-            # CRITICAL: Set max leverage at allocation to enable dynamic leverage in _fit_position()
-            # Without this, contract sizing will be capped at 1.0x even if _fit_position() sets higher leverage
+            # CRITICAL: Allocation leverage is FIXED for all trades on this basket
+            # WOS framework ignores _fit_position() calls and uses this leverage for contract sizing
+            # contracts = (basket_capital × allocation_leverage) / contract_size
             self._allocate(basket_idx, market, instrument_code, basket_capital, self.max_leverage)
 
             basket = self.strategies[basket_idx]
@@ -1397,8 +1398,9 @@ class CompositeStrategy(csc3.composite_strategy):
         self.active_leverages[basket_idx] = leverage
         self.total_trades_executed += 1
 
-        # WOS pattern: _fit_position sets leverage, _signal enters position
-        basket._fit_position(leverage)
+        # NOTE: WOS framework uses allocation leverage for ALL trades
+        # _fit_position() calls are ignored - leverage is fixed at basket initialization
+        # Our dynamic leverage calc is used only for logging and risk control tuning
         basket._signal(trade_price, basket.timetag, signal * -1)
 
     def _execute_exit(self, basket_idx: int, signal_data: Dict, exit_reason: str = ""):
