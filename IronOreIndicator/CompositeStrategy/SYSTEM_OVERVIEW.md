@@ -294,85 +294,79 @@ strength = signal_data['signal_strength']     # 0.0-1.0
 conviction = (confidence × 0.6) + (strength × 0.4)
 ```
 
-### Three Size Tiers with Smart Leverage
+### Position Sizing with Fixed Leverage
+
+**IMPORTANT**: WOS framework uses **FIXED 1.5x leverage** for all trades. Dynamic leverage is not supported.
+
+All trades execute with: `¥300,000 × 1.5x = ¥450,000 buying power`
+
+**Contract Sizing by Instrument:**
+```
+Copper (SHFE/cu):   ¥450k / ¥400k = 1 contract per trade
+Iron Ore (DCE/i):   ¥450k / ¥78k  = 5-6 contracts per trade
+Soybean (DCE/m):    ¥450k / ¥27k  = 16-17 contracts per trade
+
+Fixed leverage ensures:
+- Copper trades consistently (was 0 contracts at 1.0x)
+- Predictable position sizing across all instruments
+- Safe, manageable risk profile (max 1.5x exposure)
+```
+
+**Risk Management by Conviction:**
 
 **STRONG Conviction (conviction ≥ 0.55)**
 ```
-Position Size: 80-100% of basket capital
-Smart Leverage: 4-10x (conviction-based, risk-adjusted)
-Example: ¥240k-¥300k × 8x = ¥1,920k-¥2,400k notional
-
+Risk: Tighter stops (2.0%), earlier profit targets (8%)
 When: All indicators strongly aligned, high volume
-Risk: Tighter stops (1.5-2% vs 3%), earlier profit targets (7-8%)
 ```
 
 **MEDIUM Conviction (0.35 ≤ conviction < 0.55)**
 ```
-Position Size: 40-60% of basket capital
-Smart Leverage: 2.5-6x (conviction-based, risk-adjusted)
-Example: ¥120k-¥180k × 4x = ¥480k-¥720k notional
-
+Risk: Balanced stops (2.5%), standard profit targets (10%)
 When: Moderate signal quality, some confirmation
-Risk: Balanced stops (2-2.5%), standard profit targets (8-10%)
 ```
 
 **WEAK Conviction (0.20 ≤ conviction < 0.35)**
 ```
-Position Size: 20-30% of basket capital
-Smart Leverage: 1.5-4x (conviction-based, risk-adjusted)
-Example: ¥60k-¥90k × 2.5x = ¥150k-¥225k notional
-
+Risk: Conservative stops (3.0%), standard profit targets (10%)
 When: Signal present but weak, low confidence
-Risk: Conservative stops (2.5-3%), standard profit targets (10%)
 ```
 
-### Size Calculation Formula
+### Position Sizing Formula
 
 ```python
-# Base size tier
+# WOS framework limitation: All trades use FIXED 1.5x leverage
+# Position sizing is determined by contract sizing only
+
+# Fixed parameters
+basket_capital = ¥300,000
+allocation_leverage = 1.5
+buying_power = basket_capital × allocation_leverage = ¥450,000
+
+# Determine conviction tier (for risk parameter selection)
 if conviction >= 0.55:
-    size_pct = 0.80 + (conviction - 0.55) × 0.44  # 80-100%
     tier = 'STRONG'
+    stop_loss = 0.020  # 2%
+    profit_target = 0.08  # 8%
 elif conviction >= 0.35:
-    size_pct = 0.40 + (conviction - 0.35) × 1.0   # 40-60%
     tier = 'MEDIUM'
+    stop_loss = 0.025  # 2.5%
+    profit_target = 0.10  # 10%
 else:
-    size_pct = 0.20 + (conviction - 0.20) × 0.67  # 20-30%
     tier = 'WEAK'
+    stop_loss = 0.030  # 3%
+    profit_target = 0.10  # 10%
 
-# Risk adjustment for high volatility
-if chaos_baskets >= 2:
-    size_pct *= 0.70  # Reduce by 30%
-
-# Smart leverage calculation (conviction-based, risk-adjusted)
-leverage = leverage_manager.calculate_leverage(
-    conviction=conviction,
-    tier=tier,
-    chaos_baskets=chaos_baskets,
-    portfolio_dd=current_drawdown,
-    daily_loss=daily_loss
-)
-
-# Leverage ranges by tier:
-# STRONG: 4-10x, MEDIUM: 2.5-6x, WEAK: 1.5-4x
-# Auto-adjusted down in high risk conditions
-
-# Ensure minimum contracts (especially for large contracts like copper)
-contract_size = price × multiplier  # e.g., ¥80,000 × 5 tons = ¥400,000
-min_position_value = contract_size × 1  # At least 1 contract
-
-if position_value < min_position_value:
-    # Increase leverage to achieve minimum
-    leverage = min_position_value / (basket.pv × size_pct)
-    leverage = min(leverage, 20.0)  # Hard cap
-
-# Final position value
-position_value = basket.pv × size_pct × leverage
+# Contract sizing (WOS framework determines this)
+contracts = buying_power / contract_size
+# Copper: ¥450k / ¥400k = 1 contract
+# Iron ore: ¥450k / ¥78k = 5-6 contracts
+# Soybean: ¥450k / ¥27k = 16-17 contracts
 ```
 
 ### Example: Real Position Sizing
 
-**Scenario**: Iron ore signal arrives
+**Scenario**: Iron ore STRONG signal
 
 ```
 Signal Data:
@@ -385,21 +379,23 @@ Calculation:
 
   ✓ conviction >= 0.55 → STRONG tier
 
-  size_pct = 0.80 + (0.692 - 0.55) × 0.44 = 0.862 (86.2%)
+  # Fixed leverage system
+  buying_power = ¥300,000 × 1.5 = ¥450,000
 
-  # Smart leverage (STRONG tier: 4-10x range)
-  base_leverage = 1.0 + (0.692 × 12.86) = 9.90x
-  # No risk adjustments (no chaos, low DD, no daily loss)
-  leverage = 9.90x → capped at 10.0x (STRONG tier max)
+  # Iron ore contract size
+  contract_size = 780 × 100 = ¥78,000
 
-  position_value = ¥300,000 × 0.862 × 9.90 = ¥2,561,940
+  # Contracts executed
+  contracts = ¥450,000 / ¥78,000 = 5.77 → 5 contracts
 
-  # Risk parameters
-  stop_loss = 1.5% (tighter due to 10x leverage)
-  profit_target = 7% (earlier exit due to high leverage)
+  # Actual notional
+  position_value = 5 × ¥78,000 = ¥390,000
 
-Result: LONG 86% of basket capital with 9.90x leverage
-Notional: ¥2.56M (8.5x higher profit potential than old 1.4x system)
+  # Risk parameters (STRONG tier)
+  stop_loss = 2.0%
+  profit_target = 8%
+
+Result: LONG 5 iron ore contracts, ¥390k notional (1.3x effective leverage)
 ```
 
 ---
@@ -420,59 +416,56 @@ Check: sum(active_basket_values) / portfolio_value ≤ 0.90
 Prevents: Over-leverage across portfolio
 ```
 
-### Layer 2: Smart Leverage System
+### Layer 2: Fixed Leverage System
 
 ```
-Dynamic Leverage Ranges (conviction-based):
-  STRONG: 4-10x
-  MEDIUM: 2.5-6x
-  WEAK: 1.5-4x
+Fixed Allocation Leverage: 1.5x for ALL trades
 
-Hard Caps:
-  Absolute Maximum: 20x
-  Per-Basket Maximum: 15x
+WOS Framework Limitation:
+  - All trades execute with fixed ¥450k buying power per basket
+  - Dynamic leverage NOT supported by WOS framework
+  - Position sizing controlled by contract sizing only
 
-Risk Adjustments (multiplicative):
-  2+ chaos regimes: × 0.60 (reduce by 40%)
-  Portfolio DD > 5%: × 0.70 (reduce by 30%)
-  Daily loss > 2%: × 0.60 (reduce by 40%)
+Contract Sizing by Instrument:
+  Copper (SHFE/cu):   ¥450k / ¥400k = 1 contract
+  Iron Ore (DCE/i):   ¥450k / ¥78k  = 5-6 contracts
+  Soybean (DCE/m):    ¥450k / ¥27k  = 16-17 contracts
 
-Minimum Contract Guarantee:
-  Auto-increase leverage to ensure ≥1 contract trades
-  (Critical for large contracts like copper: 5 tons × ¥80k = ¥400k)
+Benefits:
+  - Predictable position sizing
+  - Safe, conservative leverage (1.5x max)
+  - Copper trades consistently (was 0 at 1.0x)
+  - No over-leverage risk
 
-Prevents: Under-trading small baskets, over-leveraging in bad conditions
+Prevents: Over-leveraging disasters (51% circuit breaker events)
 ```
 
-### Layer 3: Leverage-Adjusted Stop Loss
+### Layer 3: Conviction-Based Stop Loss
 
 ```
-Dynamic Stop-Loss (tighter at higher leverage):
-  ≤2x leverage: 3.0% stop
-  ≤4x leverage: 2.5% stop
-  ≤6x leverage: 2.0% stop
-  ≤10x leverage: 1.5% stop
-  >10x leverage: 1.0% stop
+Stop-Loss by Conviction Tier (Fixed 1.5x leverage):
+  STRONG: 2.0% stop
+  MEDIUM: 2.5% stop
+  WEAK: 3.0% stop
 
-Logic: Higher leverage = bigger impact from price moves
-       → Tighter stops protect capital
+Logic: Higher conviction = tighter stops
+       → Stronger signals should work quickly or exit
 
-Prevents: Excessive losses on high-leverage positions
+Prevents: Excessive losses on weak signals
 ```
 
-### Layer 4: Trailing Stops (High Leverage Positions)
+### Layer 4: Profit Targets
 
 ```
-Activation: Leverage ≥ 5x AND profit ≥ 5%
-Trail Distance: 2% below peak price
+Profit Target by Conviction:
+  STRONG: 8% target (earlier exit on strong moves)
+  MEDIUM: 10% target (standard exit)
+  WEAK: 10% target (standard exit)
 
-Example (LONG):
-  Entry: ¥800, Leverage: 8x
-  Price → ¥840 (+5%) → Trailing stop activates
-  Peak: ¥860 → Trail stop: ¥842.80 (2% below)
-  Exit: ¥842.80 → Lock in +5.35% profit
+Logic: Take profits faster on strong conviction trades
+       → Lock in gains when indicators strongly aligned
 
-Prevents: Giving back profits on high-leverage winners
+Prevents: Giving back profits when trend exhausts
 ```
 
 ### Layer 5: Drawdown Limit
@@ -497,17 +490,20 @@ Action: If breached, no new trades for rest of day
        Reduces leverage by 60% for remaining positions
 ```
 
-### Layer 7: Leverage-Weighted Exposure
+### Layer 7: Portfolio Exposure Limit
 
 ```
-Maximum Leverage-Weighted Exposure: 90%
+Maximum Active Positions: 3/3 baskets (one per instrument)
 
-Formula: sum(position_value / leverage) / portfolio_value ≤ 0.90
+With Fixed 1.5x Leverage:
+  Maximum exposure per basket: ¥450k
+  Maximum total exposure: 3 × ¥450k = ¥1.35M
+  On ¥1M portfolio: 135% notional, 90% capital at risk
 
-Logic: Measures actual capital at risk, not notional value
-       Example: ¥300k position at 5x = ¥60k base exposure
+Logic: Fixed leverage limits total risk automatically
+       Each basket can only hold one position at a time
 
-Prevents: Over-leveraging entire portfolio simultaneously
+Prevents: Over-concentration, excessive simultaneous exposure
 ```
 
 ### Layer 8: Dynamic Cash Reserve
@@ -527,18 +523,19 @@ Ensures: Liquidity for rebalancing and exits
 
 ```
 Chaos Regime Detection:
-  - Count baskets with regime == 4 (chaos)
+  - Count baskets with regime == 4 (chaos/high volatility)
 
 If chaos_baskets >= 2:
-  - Reduce new position sizes by 30%
-  - Reduce leverage by 40% (multiplicative)
   - Exit losing positions (P&L < -1%)
+  - No new entries until volatility subsides
+  - Tighten stops to 2% across all tiers
 
 If chaos_baskets >= 1:
-  - Reduce leverage by 20%
+  - Use conservative WEAK tier stops (3%)
+  - Reduce profit targets to 8%
 
 Prevents: Trading in highly volatile, directionless markets
-         Over-leveraging during unstable conditions
+         Whipsaw losses during unstable conditions
 ```
 
 ---
