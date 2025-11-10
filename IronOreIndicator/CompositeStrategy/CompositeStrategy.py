@@ -387,24 +387,24 @@ class DynamicLeverageManager:
     """
 
     def __init__(self):
-        # Leverage ranges by conviction tier
+        # Leverage ranges by conviction tier (conservative for safety)
+        # Reduced from previous 1.5-20x to 1.0-5x to prevent over-leveraging
         self.leverage_tiers = {
-            'STRONG': {'min': 4.0, 'max': 10.0, 'multiplier': 12.86},
-            'MEDIUM': {'min': 2.5, 'max': 6.0, 'multiplier': 10.0},
-            'WEAK': {'min': 1.5, 'max': 4.0, 'multiplier': 10.0},
+            'STRONG': {'min': 2.5, 'max': 5.0, 'multiplier': 5.56},  # Was 4-10x
+            'MEDIUM': {'min': 1.5, 'max': 3.0, 'multiplier': 4.29},  # Was 2.5-6x
+            'WEAK': {'min': 1.0, 'max': 2.0, 'multiplier': 4.0},     # Was 1.5-4x
         }
 
-        # Hard caps
-        self.max_leverage = 20.0  # Absolute maximum
-        self.max_basket_leverage = 15.0  # Per-basket maximum
+        # Hard caps (reduced to match allocation leverage)
+        self.max_leverage = 5.0  # Absolute maximum (was 20.0)
+        self.max_basket_leverage = 5.0  # Per-basket maximum (was 15.0)
 
         # Stop-loss tiers (tighter stops for higher leverage)
         self.stop_loss_tiers = [
-            (2.0, 0.030),   # Up to 2x: 3.0% stop
-            (4.0, 0.025),   # Up to 4x: 2.5% stop
-            (6.0, 0.020),   # Up to 6x: 2.0% stop
-            (10.0, 0.015),  # Up to 10x: 1.5% stop
-            (20.0, 0.010),  # Above 10x: 1.0% stop
+            (1.5, 0.030),  # Up to 1.5x: 3.0% stop
+            (2.5, 0.025),  # Up to 2.5x: 2.5% stop
+            (4.0, 0.020),  # Up to 4x: 2.0% stop
+            (5.0, 0.015),  # Up to 5x: 1.5% stop
         ]
 
         # Profit targets by leverage (earlier exits for high leverage)
@@ -768,7 +768,7 @@ class CompositeStrategy(csc3.composite_strategy):
         self.base_allocation_pct = 0.25
         self.max_allocation_pct = 0.35
         self.min_cash_reserve_pct = 0.10  # 10% min cash (target: 90% invested)
-        self.max_leverage = 20.0  # Maximum leverage for positions (smart leverage cap)
+        self.max_leverage = 5.0  # Conservative allocation leverage (allows copper trading without over-leverage risk)
 
         # Risk manager
         self.risk_manager = RiskManager(initial_cash)
