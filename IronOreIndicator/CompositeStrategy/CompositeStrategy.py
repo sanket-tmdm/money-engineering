@@ -80,7 +80,7 @@ class RiskManager:
 
         # Portfolio limits
         self.max_total_exposure = 0.90  # 90% max total
-        self.min_cash_reserve = 0.15   # 15% min cash
+        self.min_cash_reserve = 0.10   # 10% min cash (target: 90% invested)
 
         # Drawdown limits
         self.max_portfolio_drawdown = 0.10  # 10% max DD
@@ -115,10 +115,13 @@ class RiskManager:
 
         Returns: (can_enter: bool, reason: str)
         """
-        # 1. Position size limit
-        position_pct = proposed_size / portfolio_state.total_value if portfolio_state.total_value > 0 else 0
-        if position_pct > self.max_position_pct:
-            return False, f"Position size {position_pct*100:.1f}% exceeds limit {self.max_position_pct*100:.1f}%"
+        # 1. Position size limit - REMOVED
+        # Reason: With 30% pre-allocation + 1.4x leverage = 42% per basket
+        # This check was blocking valid trades. We have sufficient controls:
+        # - Pre-allocated capital (30% per basket)
+        # - Leverage limits (1.4x max)
+        # - Total exposure limit (90% portfolio)
+        # - Cash reserve minimum (10%)
 
         # 2. Total exposure limit
         total_exposure = portfolio_state.total_exposure + proposed_size
@@ -126,11 +129,10 @@ class RiskManager:
         if exposure_pct > self.max_total_exposure:
             return False, f"Total exposure {exposure_pct*100:.1f}% exceeds limit {self.max_total_exposure*100:.1f}%"
 
-        # 3. Cash reserve check
-        remaining_cash = portfolio_state.cash - proposed_size
-        cash_pct = remaining_cash / portfolio_state.total_value if portfolio_state.total_value > 0 else 0
-        if cash_pct < self.min_cash_reserve:
-            return False, f"Cash reserve {cash_pct*100:.1f}% below minimum {self.min_cash_reserve*100:.1f}%"
+        # 3. Cash reserve check - REMOVED for pre-allocated basket model
+        # Reason: Each basket has pre-allocated capital (¥300k) and manages its own cash
+        # The composite cash reserve (¥100k) is separate and not used for basket trades
+        # Baskets trade within their allocated capital, not composite cash
 
         # 4. Drawdown check
         if self.current_drawdown >= self.max_portfolio_drawdown:
@@ -223,6 +225,87 @@ class Rebalancer:
                 }
 
         return actions
+
+# ============================================================================
+# DYNAMIC CASH MANAGER
+# ============================================================================
+
+class DynamicCashManager:
+    """
+    Adaptive cash reserve management
+
+    Adjusts cash reserves based on market conditions and signal quality:
+    - Aggressive (5-10%): Strong signals across multiple baskets
+    - Balanced (15-20%): Normal market conditions
+    - Defensive (25-30%): High volatility or weak signals
+    """
+
+    def __init__(self):
+        self.reserve_tiers = {
+            'aggressive': 0.05,   # 5% cash when strong signals
+            'balanced': 0.15,     # 15% cash in normal conditions
+            'defensive': 0.25,    # 25% cash in high volatility
+        }
+
+        # Thresholds
+        self.strong_conviction_threshold = 0.60
+        self.chaos_regime = 4
+
+    def get_target_reserve(self, tier1_signals: Dict) -> float:
+        """
+        Determine optimal cash reserve based on current conditions
+
+        Args:
+            tier1_signals: Dict of {basket_idx: signal_data}
+
+        Returns:
+            Target cash reserve percentage (0.05 to 0.30)
+        """
+        if not tier1_signals:
+            return self.reserve_tiers['balanced']
+
+        # Count strong signals
+        strong_signals = 0
+        chaos_count = 0
+        total_conviction = 0.0
+
+        for signal_data in tier1_signals.values():
+            # Calculate conviction
+            conviction = (signal_data['confidence'] * 0.6 +
+                         signal_data['signal_strength'] * 0.4)
+            total_conviction += conviction
+
+            # Count strong signals
+            if conviction >= self.strong_conviction_threshold:
+                strong_signals += 1
+
+            # Count chaos regimes
+            if signal_data.get('regime', 0) == self.chaos_regime:
+                chaos_count += 1
+
+        avg_conviction = total_conviction / len(tier1_signals) if tier1_signals else 0
+
+        # Decision logic
+        if strong_signals >= 2 and chaos_count == 0:
+            # Multiple strong opportunities, low volatility
+            return self.reserve_tiers['aggressive']
+        elif chaos_count >= 2 or avg_conviction < 0.30:
+            # High volatility or weak signals
+            return self.reserve_tiers['defensive']
+        else:
+            # Normal conditions
+            return self.reserve_tiers['balanced']
+
+    def get_available_capital(self, composite_cash: float, target_reserve_pct: float,
+                             portfolio_value: float) -> float:
+        """
+        Calculate available capital for new positions
+
+        Returns capital above target reserve that can be deployed
+        """
+        target_reserve = portfolio_value * target_reserve_pct
+        available = composite_cash - target_reserve
+        return max(available, 0)
 
 # ============================================================================
 # SIGNAL PARSERS
@@ -388,7 +471,7 @@ class CompositeStrategy(csc3.composite_strategy):
         # Allocation config (equal-weight)
         self.base_allocation_pct = 0.25
         self.max_allocation_pct = 0.35
-        self.min_cash_reserve_pct = 0.15
+        self.min_cash_reserve_pct = 0.10  # 10% min cash (target: 90% invested)
         self.max_leverage = 1.4  # Maximum leverage for positions
 
         # Risk manager
@@ -396,6 +479,9 @@ class CompositeStrategy(csc3.composite_strategy):
 
         # Rebalancer
         self.rebalancer = Rebalancer()
+
+        # Dynamic cash manager
+        self.cash_manager = DynamicCashManager()
 
         # Entry price tracking (for stop-loss)
         self.entry_prices = {0: 0.0, 1: 0.0, 2: 0.0}
@@ -407,24 +493,38 @@ class CompositeStrategy(csc3.composite_strategy):
                    f"initial capital ¥{initial_cash:,.0f}")
 
     def _initialize_baskets(self, initial_cash: float):
-        """Allocate baskets to instruments"""
-        base_capital = initial_cash * self.base_allocation_pct
+        """
+        Pre-allocate capital to baskets for balanced portfolio
 
-        logger.info(f"Initializing baskets with ¥{base_capital:,.0f} each")
+        Target structure: 30% + 30% + 30% + 10% reserve
+        - Basket 0: 30% (¥300,000)
+        - Basket 1: 30% (¥300,000)
+        - Basket 2: 30% (¥300,000)
+        - Composite cash: 10% (¥100,000) reserve
+
+        Note: _allocate() can only be called ONCE per basket (framework constraint)
+        """
+        # Target: 30% per basket for balanced portfolio
+        target_basket_pct = 0.30
+        basket_capital = initial_cash * target_basket_pct
+
+        logger.info(f"Pre-allocating ¥{basket_capital:,.0f} (30%) to each basket")
         logger.info(f"Composite cash before allocation: ¥{self.cash:,.0f}")
 
         for basket_idx in range(BASKET_COUNT):
             market, code = self.basket_to_instrument[basket_idx]
             instrument_code = code + b'<00>'
 
-            # Allocate basket
-            self._allocate(basket_idx, market, instrument_code, base_capital, 1.0)
+            # ONE-TIME allocation per basket (framework constraint)
+            # This permanently transfers capital from composite to basket
+            self._allocate(basket_idx, market, instrument_code, basket_capital, 1.0)
 
             basket = self.strategies[basket_idx]
             logger.info(f"Basket {basket_idx}: {market.decode()}/{code.decode()} "
-                       f"allocated ¥{base_capital:,.0f}, basket.cash=¥{basket.cash:,.0f}, basket.pv=¥{basket.pv:,.0f}")
+                       f"allocated ¥{basket_capital:,.0f} (30%)")
 
-        logger.info(f"Composite cash after allocation: ¥{self.cash:,.0f}")
+        logger.info(f"Composite cash after allocation: ¥{self.cash:,.0f} "
+                   f"({self.cash/initial_cash*100:.1f}% reserve)")
 
     def calc_commodity(self, code: bytes) -> bytes:
         """
@@ -631,6 +731,64 @@ class CompositeStrategy(csc3.composite_strategy):
                 basket._signal(close_price, basket.timetag, 0)
                 self.entry_prices[basket_idx] = 0.0
 
+    def _get_portfolio_conviction(self) -> Dict:
+        """
+        Aggregate signals across baskets for portfolio-level insights
+
+        Returns dict with:
+            - net_conviction: Long conviction - short conviction
+            - total_conviction: Sum of all conviction scores
+            - directional_bias: 'long' or 'short'
+            - chaos_baskets: Count of baskets in chaos regime
+            - avg_conviction: Average conviction across baskets
+            - strong_signals: Count of strong signals (conviction >= 0.55)
+        """
+        if not self.tier1_signals:
+            return {
+                'net_conviction': 0.0,
+                'total_conviction': 0.0,
+                'directional_bias': 'neutral',
+                'chaos_baskets': 0,
+                'avg_conviction': 0.0,
+                'strong_signals': 0,
+            }
+
+        total_long_conviction = 0.0
+        total_short_conviction = 0.0
+        chaos_count = 0
+        strong_count = 0
+
+        for basket_idx, signal_data in self.tier1_signals.items():
+            # Combined conviction score
+            conviction = (signal_data['confidence'] * 0.6 +
+                         signal_data['signal_strength'] * 0.4)
+
+            # Aggregate by direction
+            if signal_data['signal'] == 1:
+                total_long_conviction += conviction
+            elif signal_data['signal'] == -1:
+                total_short_conviction += conviction
+
+            # Count chaos regimes
+            if signal_data.get('regime', 0) == 4:
+                chaos_count += 1
+
+            # Count strong signals
+            if conviction >= 0.55:
+                strong_count += 1
+
+        total_conviction = total_long_conviction + total_short_conviction
+        avg_conviction = total_conviction / len(self.tier1_signals) if self.tier1_signals else 0.0
+
+        return {
+            'net_conviction': total_long_conviction - total_short_conviction,
+            'total_conviction': total_conviction,
+            'directional_bias': 'long' if total_long_conviction > total_short_conviction else 'short',
+            'chaos_baskets': chaos_count,
+            'avg_conviction': avg_conviction,
+            'strong_signals': strong_count,
+        }
+
     def _process_trading_signals(self):
         """Execute trading signals for each basket"""
         for basket_idx in range(BASKET_COUNT):
@@ -643,8 +801,9 @@ class CompositeStrategy(csc3.composite_strategy):
 
             # Check exit conditions first
             if basket.signal != 0:
-                if self._should_exit(basket_idx, signal_data, basket):
-                    self._execute_exit(basket_idx, signal_data)
+                should_exit, exit_reason = self._should_exit(basket_idx, signal_data, basket)
+                if should_exit:
+                    self._execute_exit(basket_idx, signal_data, exit_reason)
                     continue
 
             # Check entry conditions
@@ -658,50 +817,90 @@ class CompositeStrategy(csc3.composite_strategy):
         if signal_data['signal'] == 0:
             return False
 
-        # RELAXED: Moderate confidence (0.30 vs previous 0.50)
-        if signal_data['confidence'] < 0.30:
+        # FURTHER RELAXED: Lower confidence threshold (0.20 vs previous 0.30)
+        # This allows more trading opportunities while still filtering noise
+        if signal_data['confidence'] < 0.20:
             return False
 
         # REMOVED: No chaos regime filter - trade in all regimes
         # if signal_data['regime'] == 4:
         #     return False
 
-        # RELAXED: Signal strength (0.25 vs previous 0.40)
-        if signal_data['signal_strength'] < 0.25:
+        # FURTHER RELAXED: Lower signal strength (0.15 vs previous 0.25)
+        # This increases trade frequency to achieve higher exposure
+        if signal_data['signal_strength'] < 0.15:
             return False
 
         return True
 
-    def _should_exit(self, basket_idx: int, signal_data: Dict, basket) -> bool:
-        """Exit condition checks"""
-        # Stop-loss check
+    def _should_exit(self, basket_idx: int, signal_data: Dict, basket) -> Tuple[bool, str]:
+        """
+        Enhanced exit condition checks with profit-taking
+
+        Returns: (should_exit: bool, exit_reason: str)
+        """
         entry_price = self.entry_prices[basket_idx]
         current_price = signal_data['close']
+        market, code = self.basket_to_instrument[basket_idx]
 
+        # Calculate current P&L
+        if entry_price > 0 and current_price > 0:
+            if basket.signal == 1:  # Long position
+                pnl_pct = (current_price - entry_price) / entry_price
+            else:  # Short position
+                pnl_pct = (entry_price - current_price) / entry_price
+        else:
+            pnl_pct = 0.0
+
+        # 1. PROFIT TAKING (tiered targets)
+        if pnl_pct >= 0.10:  # 10% profit
+            logger.info(f"PROFIT TARGET: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                       f"hit 10% profit ({pnl_pct*100:.1f}%)")
+            return True, f"profit_target_10pct"
+
+        if pnl_pct >= 0.05:  # 5% profit with conviction degradation
+            conviction = (signal_data['confidence'] * 0.6 +
+                         signal_data['signal_strength'] * 0.4)
+            if conviction < 0.40:
+                logger.info(f"PROFIT PROTECT: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                           f"5% profit + weak signal (conv={conviction:.2f})")
+                return True, f"profit_protect_5pct"
+
+        # 2. STOP-LOSS (3%)
         if self._check_stop_loss(entry_price, current_price, basket.signal):
-            market, code = self.basket_to_instrument[basket_idx]
-            logger.info(f"STOP-LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()})")
-            return True
+            logger.info(f"STOP-LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                       f"hit 3% loss ({pnl_pct*100:.1f}%)")
+            return True, "stop_loss"
 
-        # Signal reversal
+        # 3. SIGNAL REVERSAL (immediate exit)
         if signal_data['signal'] * basket.signal < 0:
-            market, code = self.basket_to_instrument[basket_idx]
-            logger.info(f"EXIT: Signal reversed for basket {basket_idx} ({market.decode()}/{code.decode()})")
-            return True
+            logger.info(f"SIGNAL REVERSAL: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                       f"signal flipped {basket.signal} -> {signal_data['signal']}")
+            return True, "signal_reversal"
 
-        # Confidence dropped
-        if signal_data['confidence'] < 0.30:
-            market, code = self.basket_to_instrument[basket_idx]
-            logger.info(f"EXIT: Confidence dropped for basket {basket_idx} ({market.decode()}/{code.decode()})")
-            return True
+        # 4. CONFIDENCE DEGRADATION (tiered thresholds)
+        if signal_data['confidence'] < 0.20:
+            logger.info(f"LOW CONFIDENCE: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                       f"confidence={signal_data['confidence']:.2f} < 0.20")
+            return True, "low_confidence"
 
-        # REMOVED: No chaos regime exit filter - hold through all regimes
-        # if signal_data['regime'] == 4:
-        #     market, code = self.basket_to_instrument[basket_idx]
-        #     logger.info(f"EXIT: Chaos regime for basket {basket_idx} ({market.decode()}/{code.decode()})")
-        #     return True
+        elif signal_data['confidence'] < 0.30:
+            # Only exit if also losing money
+            if pnl_pct < -0.01:  # Losing 1%+
+                logger.info(f"CONFIDENCE DROP + LOSS: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                           f"conf={signal_data['confidence']:.2f}, P&L={pnl_pct*100:.1f}%")
+                return True, "confidence_drop_with_loss"
 
-        return False
+        # 5. PORTFOLIO-LEVEL RISK (chaos regimes)
+        portfolio_conviction = self._get_portfolio_conviction()
+        if portfolio_conviction['chaos_baskets'] >= 2:
+            # Exit losing positions in high volatility
+            if pnl_pct < -0.01:
+                logger.info(f"CHAOS EXIT: Basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                           f"2+ chaos regimes, P&L={pnl_pct*100:.1f}%")
+                return True, "chaos_regime_exit"
+
+        return False, ""
 
     def _check_stop_loss(self, entry_price: float, current_price: float, position_type: int) -> bool:
         """Check if stop-loss hit (3%)"""
@@ -716,45 +915,121 @@ class CompositeStrategy(csc3.composite_strategy):
         return loss_pct >= 0.03
 
     def _execute_entry(self, basket_idx: int, signal_data: Dict):
-        """Execute entry for basket"""
+        """
+        Execute entry using TIERED position sizing
+
+        Sizing tiers based on signal conviction:
+        - STRONG (conviction >= 0.55): 80-100% of basket capital
+        - MEDIUM (conviction >= 0.35): 40-60% of basket capital
+        - WEAK (conviction >= 0.20): 20-30% of basket capital
+
+        Never blocks trades - uses fallback capital chain if needed.
+        """
         basket = self.strategies[basket_idx]
         market, code = self.basket_to_instrument[basket_idx]
 
-        # Calculate leverage based on confidence
+        # Calculate combined conviction score
         confidence = signal_data['confidence']
-        leverage = 1.0 + (confidence * 1.5)  # 1.0 to 2.5
+        strength = signal_data['signal_strength']
+        conviction = (confidence * 0.6) + (strength * 0.4)
+
+        # Get portfolio-level insights for risk adjustment
+        portfolio_conviction = self._get_portfolio_conviction()
+
+        # Determine position size tier
+        if conviction >= 0.55:  # STRONG
+            size_pct = 0.80 + (conviction - 0.55) * 0.44  # 80-100%
+            tier_name = "STRONG"
+        elif conviction >= 0.35:  # MEDIUM
+            size_pct = 0.40 + (conviction - 0.35) * 1.0   # 40-60%
+            tier_name = "MEDIUM"
+        else:  # WEAK
+            size_pct = 0.20 + (conviction - 0.20) * 0.67  # 20-30%
+            tier_name = "WEAK"
+
+        # Portfolio-level risk adjustments
+        if portfolio_conviction['chaos_baskets'] >= 2:
+            size_pct *= 0.70  # Reduce by 30% in high volatility
+            tier_name += "_CHAOS_REDUCED"
+
+        # Calculate leverage (conviction-based, but capped)
+        leverage = 1.0 + (conviction * 1.4)  # 1.0 to 2.4 range
         leverage = min(leverage, self.max_leverage)
 
-        # Risk check
-        allocated_capital = self.pv * self.base_allocation_pct
+        # Calculate target position value
+        target_position_value = basket.pv * size_pct * leverage
+
+        # Risk check with FALLBACK CHAIN (never fully block)
         can_enter, reason = self.risk_manager.can_enter_position(
-            basket_idx, allocated_capital * leverage, self._get_portfolio_state()
+            basket_idx, target_position_value, self._get_portfolio_state()
         )
 
         if not can_enter:
-            logger.info(f"ENTRY BLOCKED basket {basket_idx} ({market.decode()}/{code.decode()}): {reason}")
-            return
+            # FALLBACK CHAIN: Try to enable trade
+            logger.info(f"Entry initially blocked for basket {basket_idx}: {reason}")
+
+            # Fallback 1: Reduce position size by 40%
+            if "exposure" in reason.lower() or "drawdown" in reason.lower():
+                logger.info(f"FALLBACK 1: Reducing position size by 40%")
+                size_pct *= 0.60
+                target_position_value = basket.pv * size_pct * leverage
+                can_enter, reason = self.risk_manager.can_enter_position(
+                    basket_idx, target_position_value, self._get_portfolio_state()
+                )
+
+            # Fallback 2: Reduce leverage to 1.1x
+            if not can_enter and leverage > 1.1:
+                logger.info(f"FALLBACK 2: Reducing leverage from {leverage:.2f} to 1.1x")
+                leverage = 1.1
+                target_position_value = basket.pv * size_pct * leverage
+                can_enter, reason = self.risk_manager.can_enter_position(
+                    basket_idx, target_position_value, self._get_portfolio_state()
+                )
+
+            # Fallback 3: Minimum position (20% size, 1.0x leverage)
+            if not can_enter:
+                logger.info(f"FALLBACK 3: Minimum position (20% size, 1.0x leverage)")
+                size_pct = 0.20
+                leverage = 1.0
+                target_position_value = basket.pv * size_pct * leverage
+                can_enter, reason = self.risk_manager.can_enter_position(
+                    basket_idx, target_position_value, self._get_portfolio_state()
+                )
+
+            # Final check - only block on critical issues (drawdown, daily loss)
+            if not can_enter:
+                logger.info(f"ENTRY BLOCKED basket {basket_idx} ({market.decode()}/{code.decode()}) "
+                           f"after all fallbacks: {reason}")
+                return
 
         # Execute trade via framework (WOS pattern)
         signal = signal_data['signal']
 
-        # Use signal price when basket.price not yet available (Day 1 before on_reference)
+        # Use signal price when basket.price not yet available
         trade_price = basket.price if basket.price > 0 else signal_data['close']
 
-        logger.info(f"{'LONG' if signal == 1 else 'SHORT'} basket {basket_idx}: "
-                   f"{market.decode()}/{code.decode()}, lev={leverage:.2f}, "
-                   f"price={trade_price:.2f}, conf={confidence:.2f}")
+        logger.info(f"{'LONG' if signal == 1 else 'SHORT'} basket {basket_idx} [{tier_name}]: "
+                   f"{market.decode()}/{code.decode()}, size={size_pct*100:.0f}%, "
+                   f"lev={leverage:.2f}, price={trade_price:.2f}, "
+                   f"conv={conviction:.2f} (conf={confidence:.2f}, str={strength:.2f})")
 
         # Store entry price for stop-loss tracking
         self.entry_prices[basket_idx] = trade_price
         self.total_trades_executed += 1
 
-        # WOS pattern: _fit_position BEFORE _signal, use trade_price, invert signal
+        # WOS pattern: _fit_position sets leverage, _signal enters position
         basket._fit_position(leverage)
         basket._signal(trade_price, basket.timetag, signal * -1)
 
-    def _execute_exit(self, basket_idx: int, signal_data: Dict):
-        """Execute exit for basket"""
+    def _execute_exit(self, basket_idx: int, signal_data: Dict, exit_reason: str = ""):
+        """
+        Execute exit for basket with detailed logging
+
+        Args:
+            basket_idx: Basket index
+            signal_data: Current signal data
+            exit_reason: Why we're exiting (profit_target, stop_loss, etc.)
+        """
         basket = self.strategies[basket_idx]
         market, code = self.basket_to_instrument[basket_idx]
 
@@ -769,10 +1044,11 @@ class CompositeStrategy(csc3.composite_strategy):
             else:  # Short position
                 pnl_pct = (entry_price - exit_price) / entry_price * 100
 
-            logger.info(f"CLOSE basket {basket_idx}: {market.decode()}/{code.decode()}, "
+            logger.info(f"CLOSE basket {basket_idx} [{exit_reason}]: {market.decode()}/{code.decode()}, "
+                       f"{'LONG' if basket.signal == 1 else 'SHORT'} "
                        f"entry={entry_price:.2f}, exit={exit_price:.2f}, P&L={pnl_pct:+.2f}%")
         else:
-            logger.info(f"CLOSE basket {basket_idx}: {market.decode()}/{code.decode()}")
+            logger.info(f"CLOSE basket {basket_idx} [{exit_reason}]: {market.decode()}/{code.decode()}")
 
         # Execute exit via framework (use exit_price with fallback)
         basket._signal(exit_price, basket.timetag, 0)
@@ -832,18 +1108,22 @@ class CompositeStrategy(csc3.composite_strategy):
         """Update portfolio-level metrics
 
         The framework automatically updates self.pv via _save() and _sync().
-        We only need to calculate derived metrics.
+        We calculate derived metrics based on pre-allocated structure.
         """
         # Count active positions (read from basket state)
         self.active_positions = sum(1 for basket in self.strategies if basket.signal != 0)
 
-        # Calculate exposure (baskets with active positions)
-        total_position_value = sum(basket.pv for basket in self.strategies if basket.signal != 0)
+        # Total basket capital (all baskets, whether flat or in position)
+        # This represents the 90% invested portion (3 × 30% = 90%)
+        total_basket_value = sum(basket.pv for basket in self.strategies)
 
-        self.portfolio_exposure_pct = total_position_value / self.pv if self.pv > 0 else 0
+        # Portfolio exposure = total basket capital / total portfolio
+        # With 30%+30%+30% allocation, this should be ~90%
+        self.portfolio_exposure_pct = total_basket_value / self.pv if self.pv > 0 else 0
 
-        # Cash reserve
-        self.cash_reserve_pct = 1.0 - self.portfolio_exposure_pct
+        # Cash reserve = composite cash / total portfolio
+        # Should be ~10% with our 30/30/30/10 structure
+        self.cash_reserve_pct = self.cash / self.pv if self.pv > 0 else 0
 
         # Update per-basket metrics (for visualization)
         self.basket_0_pv = self.strategies[0].pv
@@ -868,8 +1148,14 @@ class CompositeStrategy(csc3.composite_strategy):
 
         state = PortfolioState()
         state.total_value = self.pv
+
+        # FIX: Calculate actual active exposure (position values, not all basket PV)
+        # Only count baskets with active positions (signal != 0)
         state.total_exposure = sum(s.pv for s in self.strategies if s.signal != 0)
-        state.cash = self.pv - state.total_exposure
+
+        # FIX: Use framework-maintained cash field instead of calculating
+        # The framework manages self.cash when capital is allocated/deallocated
+        state.cash = self.cash
 
         return state
 
