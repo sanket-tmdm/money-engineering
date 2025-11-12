@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""
+# TrinityStrategy Indicator Analysis Dashboard
+
+This script provides comprehensive analysis and visualization of the
+TrinityStrategy indicator, fetching calculated data from the server.
+
+## Features:
+- Async data fetching using svr3 module
+- Automatic field detection from StructValues
+- Interactive time series visualization
+- Statistical analysis and distribution plots
+- Compatible with interactive and regular Python modes
+
+## Usage:
+- Interactive mode (VS Code/Cursor): Run cells directly with await
+- Regular mode: python TrinityStrategy_viz.py
+
+Reference: Chapter 10 - Visualization
+"""
+
+# %% [markdown]
+# # TrinityStrategy Indicator Analytics Dashboard
+#
+# Fetches and analyzes TrinityStrategy indicator data from server
+
+# %%
+# Core imports
+import asyncio
+import warnings
+from typing import Dict, List
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import svr3
+
+warnings.filterwarnings("ignore")
+
+# Set up plotting style
+plt.style.use("seaborn-v0_8")
+sns.set_palette("husl")
+
+print("📊 TrinityStrategy Indicator Dashboard Initialized")
+
+# %% [markdown]
+# ## Configuration
+#
+# Server connection and date range settings
+
+# %%
+# Server configuration
+RAILS_URL = "https://10.99.100.116:4433/private-api/"
+WS_URL = "wss://10.99.100.116:4433/tm"
+TM_MASTER = ("10.99.100.116", 6102)
+# Token will be passed as command-line argument (see bottom of file)
+
+# Date range (YYYYMMDDHHmmss format)
+START_DATE = 20230103203204
+END_DATE = 20230510203204
+
+# Indicator configuration
+INDICATOR_NAME = "TrinityStrategy"
+GRANULARITY = 900  # 15-minute (adjust based on your indicator's output granularity)
+NAMESPACE = "private"
+
+# Commodity to visualize (Tier-1: pick ONE commodity; Tier-2: use placeholder)
+MARKET = "DCE"          # Adjust based on your uout.json
+COMMODITY = "i<00>"     # Adjust based on your uout.json
+
+# For Tier-2 composites, use placeholder from uout.json:
+# MARKET = "DCE"
+# COMMODITY = "COMPOSITE<00>"
+
+# %% [markdown]
+# ## Data Fetcher Class
+#
+# Handles server connection and data retrieval using svr3
+
+# %%
+class TrinityStrategyDataFetcher:
+    """
+    Data fetcher for TrinityStrategy indicator using svr3 module
+
+    Implements proper connection lifecycle:
+    - connect() → login → connect → ws_loop → shakehand
+    - fetch() → save_by_symbol()
+    - close() → stop → join
+
+    Reference: WOS Chapter 10 - Pattern 2 (connection reuse)
+    """
+
+    def __init__(self, token: str, start: int, end: int):
+        self.token = token
+        self.start_date = start
+        self.end_date = end
+        self.client = None
+        self.df = None
+        self.available_fields = []
+
+    async def connect(self):
+        """Establish connection to server (call once)"""
+
+        print(f"🔄 Connecting to server...")
+
+        self.client = svr3.sv_reader(
+            self.start_date,
+            self.end_date,
+            INDICATOR_NAME,
+            GRANULARITY,
+            NAMESPACE,
+            "symbol",
+            [MARKET],
+            [COMMODITY],
+            False,                  # No persistent file
+            RAILS_URL,
+            WS_URL,
+            "",                     # Username (blank)
+            "",                     # Password (blank)
+            TM_MASTER,
+        )
+        self.client.token = self.token
+
+        # Connection lifecycle
+        await self.client.login()
+        await self.client.connect()
+        self.client.ws_task = asyncio.create_task(self.client.ws_loop())
+        await self.client.shakehand()
+
+        print(f"✓ Connected to server")
+
+    async def fetch(self, market: str, code: str) -> pd.DataFrame:
+        """
+        Fetch data for specified market/code
+
+        Args:
+            market: Market identifier (e.g., "DCE", "SHFE")
+            code: Commodity code (e.g., "i<00>", "cu<00>")
+
+        Returns:
+            DataFrame with all indicator fields
+        """
+
+        print(f"📊 Fetching {market}/{code}...")
+
+        # Update markets/codes and reuse connection
+        self.client.markets = [market]
+        self.client.codes = [code]
+
+        # Fetch data - returns List[Dict]
+        ret = await self.client.save_by_symbol()
+        data = ret[1][1]  # Extract List[Dict] from result tuple
+
+        if not data:
+            print(f"⚠ No data returned for {market}/{code}")
+            return pd.DataFrame()
+
+        # Convert List[Dict] to DataFrame
+        # Each dict contains header fields (time_tag, granularity, market, code, namespace)
+        # plus all fields from uout.json
+        df = pd.DataFrame(data)
+
+        # Store available fields (exclude header fields)
+        header_fields = ['time_tag', 'granularity', 'market', 'code', 'namespace']
+        self.available_fields = [col for col in df.columns if col not in header_fields]
+
+        # Convert time_tag (unix ms) to datetime
+        if 'time_tag' in df.columns:
+            df['datetime'] = pd.to_datetime(df['time_tag'], unit='ms')
+            df = df.sort_values('datetime')
+
+        self.df = df
+
+        print(f"✓ Loaded {len(df)} data points")
+        if 'datetime' in df.columns:
+            print(f"  Date range: {df['datetime'].min()} to {df['datetime'].max()}")
+        print(f"  Available fields: {', '.join(self.available_fields[:5])}...")
+
+        return df
+
+    async def close(self):
+        """Clean up connection"""
+
+        if self.client:
+            self.client.stop()
+            await self.client.join()
+            print("✓ Connection closed")
+
+    def get_summary(self) -> Dict:
+        """Get summary statistics of the indicator data"""
+
+        if self.df is None or self.df.empty:
+            return {}
+
+        summary = {
+            'total_points': len(self.df),
+            'fields': self.available_fields,
+        }
+
+        if 'datetime' in self.df.columns:
+            summary['date_range'] = (self.df['datetime'].min(), self.df['datetime'].max())
+
+        # Add basic statistics for numeric fields
+        numeric_fields = self.df.select_dtypes(include=[np.number]).columns
+        summary['statistics'] = {}
+        for field in numeric_fields:
+            if field not in ['timetag', 'bar_index']:
+                summary['statistics'][field] = {
+                    'mean': self.df[field].mean(),
+                    'std': self.df[field].std(),
+                    'min': self.df[field].min(),
+                    'max': self.df[field].max()
+                }
+
+        return summary
+
+# %% [markdown]
+# ## Fetch Data from Server
+#
+# Connect and retrieve TrinityStrategy indicator data
+
+# %%
+async def fetch_indicator_data(token: str):
+    """Main data fetching function"""
+
+    fetcher = TrinityStrategyDataFetcher(token, START_DATE, END_DATE)
+
+    try:
+        # Connect to server
+        await fetcher.connect()
+
+        # Fetch data for specified market/commodity
+        df = await fetcher.fetch(MARKET, COMMODITY)
+
+        # Display summary
+        summary = fetcher.get_summary()
+        if summary:
+            print("\n" + "="*60)
+            print("📊 Data Summary:")
+            print("="*60)
+            print(f"Total data points: {summary['total_points']}")
+            if 'date_range' in summary:
+                print(f"Date range: {summary['date_range'][0]} to {summary['date_range'][1]}")
+            print(f"\nAvailable fields ({len(summary['fields'])}):")
+            for field in summary['fields']:
+                print(f"  - {field}")
+
+        return fetcher, df
+
+    except Exception as e:
+        print(f"❌ Error fetching data: {e}")
+        await fetcher.close()
+        raise
+
+# Fetch data (compatible with interactive and regular modes)
+# Get token from command-line argument or prompt
+import sys
+
+def get_token():
+    """Get token from command-line or prompt user"""
+    if len(sys.argv) > 1 and sys.argv[1].startswith('--token='):
+        return sys.argv[1].split('=', 1)[1]
+    elif '--token' in sys.argv:
+        idx = sys.argv.index('--token')
+        if idx + 1 < len(sys.argv):
+            return sys.argv[idx + 1]
+    # Interactive mode - prompt user
+    return input("Enter authentication token: ")
+
+TOKEN = None
+fetcher = None
+df = None
+
+# Main execution wrapper
+async def main():
+    """Main execution function"""
+    global fetcher, df, TOKEN
+
+    TOKEN = get_token()
+    fetcher, df = await fetch_indicator_data(TOKEN)
+
+    # Display first few rows
+    if not df.empty:
+        print("\n📋 Sample data (first 5 rows):")
+        print(df.head())
+
+    return fetcher, df
+
+# Execute main function
+if __name__ == '__main__':
+    fetcher, df = asyncio.run(main())
+else:
+    # Interactive/notebook mode - set up but don't execute yet
+    print("Run: fetcher, df = asyncio.run(main()) to fetch data")
+
+# %% [markdown]
+# ## Time Series Visualization
+#
+# Plot indicator values over time
+
+# %%
+def plot_time_series(df: pd.DataFrame, fields: List[str], max_plots: int = 6):
+    """
+    Plot time series for specified fields
+
+    Args:
+        df: DataFrame with indicator data
+        fields: List of field names to plot
+        max_plots: Maximum number of plots to show
+    """
+
+    if df.empty or 'datetime' not in df.columns:
+        print("⚠ No datetime data available for plotting")
+        return
+
+    # Filter fields that exist and are numeric
+    plot_fields = [f for f in fields if f in df.columns and pd.api.types.is_numeric_dtype(df[f])]
+    plot_fields = plot_fields[:max_plots]
+
+    if not plot_fields:
+        print("⚠ No numeric fields available for plotting")
+        return
+
+    n_plots = len(plot_fields)
+    _, axes = plt.subplots(n_plots, 1, figsize=(15, 4 * n_plots))
+
+    if n_plots == 1:
+        axes = [axes]
+
+    for idx, field in enumerate(plot_fields):
+        axes[idx].plot(df['datetime'], df[field], linewidth=1.5, alpha=0.8)
+        axes[idx].set_xlabel('Date')
+        axes[idx].set_ylabel(field)
+        axes[idx].set_title(f'TrinityStrategy - {field} Over Time')
+        axes[idx].grid(True, alpha=0.3)
+
+        # Add zero line if data crosses zero
+        if df[field].min() < 0 < df[field].max():
+            axes[idx].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig(f'TrinityStrategy_time_series_{START_DATE}_{END_DATE}.png', dpi=150, bbox_inches='tight')
+    print(f"✓ Saved: TrinityStrategy_time_series_{START_DATE}_{END_DATE}.png")
+    plt.show()
+
+# Plot time series for available fields (only if data was fetched)
+if __name__ == '__main__' and df is not None and not df.empty and fetcher.available_fields:
+    plot_time_series(df, fetcher.available_fields, max_plots=6)
+
+# %% [markdown]
+# ## Distribution Analysis
+#
+# Visualize distribution of indicator values
+
+# %%
+def plot_distributions(df: pd.DataFrame, fields: List[str], max_plots: int = 6):
+    """
+    Plot distributions for specified fields
+
+    Args:
+        df: DataFrame with indicator data
+        fields: List of field names to plot
+        max_plots: Maximum number of plots to show
+    """
+
+    if df.empty:
+        print("⚠ No data available for plotting")
+        return
+
+    # Filter numeric fields
+    plot_fields = [f for f in fields if f in df.columns and pd.api.types.is_numeric_dtype(df[f])]
+    plot_fields = plot_fields[:max_plots]
+
+    if not plot_fields:
+        print("⚠ No numeric fields available for plotting")
+        return
+
+    n_plots = len(plot_fields)
+    n_cols = 2
+    n_rows = (n_plots + 1) // 2
+
+    _, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4 * n_rows))
+    axes = axes.flatten() if n_plots > 1 else [axes]
+
+    for idx, field in enumerate(plot_fields):
+        data = df[field].dropna()
+        axes[idx].hist(data, bins=50, alpha=0.7, edgecolor='black')
+        axes[idx].set_xlabel(field)
+        axes[idx].set_ylabel('Frequency')
+        axes[idx].set_title(f'Distribution of {field}')
+        axes[idx].grid(True, alpha=0.3)
+
+        # Add mean line
+        mean_val = data.mean()
+        axes[idx].axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.4f}')
+        axes[idx].legend()
+
+    # Hide unused subplots
+    for idx in range(len(plot_fields), len(axes)):
+        axes[idx].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(f'TrinityStrategy_distributions_{START_DATE}_{END_DATE}.png', dpi=150, bbox_inches='tight')
+    print(f"✓ Saved: TrinityStrategy_distributions_{START_DATE}_{END_DATE}.png")
+    plt.show()
+
+# Plot distributions (only if data was fetched)
+if __name__ == '__main__' and df is not None and not df.empty and fetcher.available_fields:
+    plot_distributions(df, fetcher.available_fields, max_plots=6)
+
+# %% [markdown]
+# ## Statistical Summary
+#
+# Display detailed statistics
+
+# %%
+def print_statistics(summary: Dict):
+    """Print formatted statistics"""
+
+    if not summary or 'statistics' not in summary:
+        print("⚠ No statistics available")
+        return
+
+    print("\n" + "="*80)
+    print("📊 Statistical Analysis:")
+    print("="*80)
+
+    for field, stats in summary['statistics'].items():
+        print(f"\n{field}:")
+        print(f"  Mean:  {stats['mean']:>12.6f}")
+        print(f"  Std:   {stats['std']:>12.6f}")
+        print(f"  Min:   {stats['min']:>12.6f}")
+        print(f"  Max:   {stats['max']:>12.6f}")
+        print(f"  Range: {stats['max'] - stats['min']:>12.6f}")
+
+# Print statistics (only if data was fetched)
+if __name__ == '__main__' and fetcher is not None:
+    summary = fetcher.get_summary()
+    if summary:
+        print_statistics(summary)
+
+# %% [markdown]
+# ## Correlation Analysis (if multiple fields)
+#
+# Analyze correlations between indicator fields
+
+# %%
+def plot_correlation_matrix(df: pd.DataFrame, fields: List[str]):
+    """
+    Plot correlation matrix for numeric fields
+
+    Args:
+        df: DataFrame with indicator data
+        fields: List of field names to include
+    """
+
+    if df.empty:
+        print("⚠ No data available for correlation analysis")
+        return
+
+    # Filter numeric fields
+    numeric_fields = [f for f in fields if f in df.columns and pd.api.types.is_numeric_dtype(df[f])]
+
+    if len(numeric_fields) < 2:
+        print("⚠ Need at least 2 numeric fields for correlation analysis")
+        return
+
+    # Compute correlation matrix
+    corr_df = df[numeric_fields].corr()
+
+    # Plot heatmap
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(corr_df, annot=True, fmt='.3f', cmap='coolwarm', center=0,
+                square=True, linewidths=1, cbar_kws={"shrink": 0.8})
+    plt.title(f'TrinityStrategy - Field Correlation Matrix')
+    plt.tight_layout()
+    plt.savefig(f'TrinityStrategy_correlation_{START_DATE}_{END_DATE}.png', dpi=150, bbox_inches='tight')
+    print(f"✓ Saved: TrinityStrategy_correlation_{START_DATE}_{END_DATE}.png")
+    plt.show()
+
+# Plot correlation matrix (only if data was fetched)
+if __name__ == '__main__' and df is not None and not df.empty and fetcher is not None and len(fetcher.available_fields) >= 2:
+    plot_correlation_matrix(df, fetcher.available_fields)
+
+# %% [markdown]
+# ## Cleanup
+#
+# Close server connection
+
+# %%
+async def cleanup():
+    """Close connection gracefully"""
+    if fetcher is not None:
+        await fetcher.close()
+
+# Cleanup and final summary
+if __name__ == '__main__':
+    asyncio.run(cleanup())
+
+    print("\n✅ Visualization complete!")
+    print(f"\nGenerated files:")
+    print(f"  - TrinityStrategy_time_series_{START_DATE}_{END_DATE}.png")
+    print(f"  - TrinityStrategy_distributions_{START_DATE}_{END_DATE}.png")
+    print(f"  - TrinityStrategy_correlation_{START_DATE}_{END_DATE}.png")
+    print("\nNext steps:")
+    print("  1. Review the generated plots")
+    print("  2. Customize analysis based on your indicator's specific fields")
+    print("  3. Add custom metrics and performance analysis")
+    print("  4. Adjust date ranges and commodities as needed")

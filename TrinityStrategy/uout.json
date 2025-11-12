@@ -1,0 +1,119 @@
+{
+  "private": {
+    "markets": [
+      "DCE",
+      "SHFE"
+    ],
+    "security_categories": [
+      [
+        1,
+        2,
+        3
+      ],
+      [
+        1,
+        2,
+        3
+      ]
+    ],
+    "securities": [
+      [
+        "i"
+      ],
+      [
+        "cu",
+        "sc"
+      ]
+    ],
+    "sample_granularities": {
+      "type": "min",
+      "cycles": [
+        900
+      ],
+      "cycle_lengths": [
+        0
+      ]
+    },
+    "export": {
+      "XXX": {
+        "fields": [
+          "_preserved_field",
+          "bar_index",
+          "adx_value",
+          "di_plus",
+          "di_minus",
+          "upper_band",
+          "middle_band",
+          "lower_band",
+          "conviction_oscillator"
+        ],
+        "defs": [
+          {
+            "field_type": "int64",
+            "display_name": "Preserved Field",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Bar Index",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "ADX Value",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "DI Plus",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "DI Minus",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Upper Band",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Middle Band",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Lower Band",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Conviction Oscillator",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          }
+        ],
+        "revision": -1
+      }
+    }
+  }
+}

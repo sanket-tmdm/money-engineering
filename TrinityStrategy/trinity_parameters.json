@@ -1,0 +1,82 @@
+{
+  "tuning_metadata": {
+    "date_range": [
+      20240101000000,
+      20250101000000
+    ],
+    "data_points_per_instrument": {
+      "i<00>": 5508,
+      "cu<00>": 7388,
+      "sc<00>": 8798
+    },
+    "generated_at": "2025-11-12T20:59:14.044631",
+    "percentiles": {
+      "adx_river": 0.7,
+      "adx_lake": 0.3,
+      "conviction_bull": 0.8,
+      "conviction_bear": 0.2
+    }
+  },
+  "instruments": {
+    "i<00>": {
+      "instrument": "DCE/i<00>",
+      "data_points": 5508,
+      "adx_river_threshold": 39.91,
+      "adx_lake_threshold": 26.33,
+      "adx_mean": 34.77,
+      "adx_std": 13.24,
+      "conviction_bull_threshold": 0.5804,
+      "conviction_bear_threshold": -0.6578,
+      "conviction_mean": -0.032,
+      "conviction_std": 1.2852,
+      "bb_width_mean": 27.55,
+      "bb_width_std": 13.36,
+      "bb_width_pct_mean": 3.39,
+      "bb_width_pct_std": 1.72,
+      "bb_width_high_volatility": 42.89,
+      "bb_width_low_volatility": 14.82,
+      "di_plus_mean": 20.17,
+      "di_minus_mean": 20.52
+    },
+    "cu<00>": {
+      "instrument": "SHFE/cu<00>",
+      "data_points": 7388,
+      "adx_river_threshold": 39.96,
+      "adx_lake_threshold": 26.56,
+      "adx_mean": 34.95,
+      "adx_std": 13.31,
+      "conviction_bull_threshold": 33.0581,
+      "conviction_bear_threshold": -25.9996,
+      "conviction_mean": 4.2844,
+      "conviction_std": 66.4365,
+      "bb_width_mean": 1059.62,
+      "bb_width_std": 700.92,
+      "bb_width_pct_mean": 1.39,
+      "bb_width_pct_std": 0.87,
+      "bb_width_high_volatility": 1909.61,
+      "bb_width_low_volatility": 410.2,
+      "di_plus_mean": 22.16,
+      "di_minus_mean": 21.32
+    },
+    "sc<00>": {
+      "instrument": "SHFE/sc<00>",
+      "data_points": 8798,
+      "adx_river_threshold": 42.25,
+      "adx_lake_threshold": 27.65,
+      "adx_mean": 36.19,
+      "adx_std": 13.06,
+      "conviction_bull_threshold": 0.3071,
+      "conviction_bear_threshold": -0.337,
+      "conviction_mean": -0.0761,
+      "conviction_std": 1.291,
+      "bb_width_mean": 12.36,
+      "bb_width_std": 7.79,
+      "bb_width_pct_mean": 2.15,
+      "bb_width_pct_std": 1.38,
+      "bb_width_high_volatility": 19.75,
+      "bb_width_low_volatility": 6.32,
+      "di_plus_mean": 22.87,
+      "di_minus_mean": 22.3
+    }
+  }
+}
