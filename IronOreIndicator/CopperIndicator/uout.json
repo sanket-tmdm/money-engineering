@@ -1,0 +1,205 @@
+{
+  "private": {
+    "markets": [
+      "SHFE"
+    ],
+    "security_categories": [
+      [
+        1,
+        2,
+        3
+      ]
+    ],
+    "securities": [
+      [
+        "cu"
+      ]
+    ],
+    "sample_granularities": {
+      "type": "min",
+      "cycles": [
+        900
+      ],
+      "cycle_lengths": [
+        0
+      ]
+    },
+    "export": {
+      "XXX": {
+        "fields": [
+          "_preserved_field",
+          "bar_index",
+          "close",
+          "ema_12",
+          "ema_26",
+          "ema_50",
+          "macd",
+          "macd_signal",
+          "macd_histogram",
+          "rsi",
+          "bb_upper",
+          "bb_middle",
+          "bb_lower",
+          "bb_width",
+          "bb_width_pct",
+          "atr",
+          "volume_ema",
+          "regime",
+          "signal",
+          "confidence",
+          "signal_strength"
+        ],
+        "defs": [
+          {
+            "field_type": "int64",
+            "display_name": "Preserved Field",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Bar Index",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Close Price",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "EMA 12",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "EMA 24",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "EMA 45",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD Signal",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "MACD Histogram",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "RSI",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Upper",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Middle",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Lower",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Width",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "BB Width Pct",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "ATR",
+            "precision": 6,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Volume EMA",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Regime",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Signal",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Confidence",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Signal Strength",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          }
+        ],
+        "revision": -1
+      }
+    }
+  }
+}

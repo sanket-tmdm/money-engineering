@@ -250,7 +250,8 @@ import asyncio
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import List, Dict
+from typing import Optional
+import asyncio
 import svr3
 
 class IndicatorVisualizer:
@@ -313,13 +314,13 @@ def plot_indicator_signals(df):
     """Plot indicator signals over time (x-axis naturally skips weekends/holidays)."""
     fig, axes = plt.subplots(3, 1, figsize=(15, 10))
 
-    # Plot 1: EMAs and Price
+    # Plot 1: Indicator values
     ax1 = axes[0]
     ax1.plot(df['datetime'], df['ema_fast'], label='EMA Fast', color='blue')
     ax1.plot(df['datetime'], df['ema_slow'], label='EMA Slow', color='red')
     ax1.set_ylabel('Price')
     ax1.legend()
-    ax1.set_title('EMA Indicators')
+    ax1.set_title('Indicator Values')
     ax1.grid(True)
 
     # Plot 2: Signals
@@ -332,57 +333,37 @@ def plot_indicator_signals(df):
     ax2.set_title('Trading Signals')
     ax2.grid(True)
 
-    # Plot 3: Confidence
+    # Plot 3: Bar index
     ax3 = axes[2]
     ax3.fill_between(df['datetime'], 0, df['confidence'],
                      alpha=0.3, color='green')
     ax3.set_xlabel('Time')
-    ax3.set_ylabel('Confidence')
-    ax3.set_title('Signal Confidence')
+    ax3.set_ylabel('Bar Index')
+    ax3.set_title('Bar Counter')
     ax3.grid(True)
 
     plt.tight_layout()
     plt.savefig('indicator_analysis.png', dpi=150)
     print("Saved: indicator_analysis.png")
 
-def analyze_signal_distribution(df):
-    """Analyze signal distribution."""
-    print("\n=== Signal Distribution ===")
-    print(df['signal'].value_counts())
-
-    print("\n=== Confidence Statistics ===")
-    print(df['confidence'].describe())
-
-    # Plot distributions
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Signal distribution
-    df['signal'].value_counts().plot(kind='bar', ax=axes[0])
-    axes[0].set_title('Signal Distribution')
-    axes[0].set_ylabel('Count')
-
-    # Confidence distribution
-    axes[1].hist(df['confidence'], bins=20, edgecolor='black')
-    axes[1].set_title('Confidence Distribution')
-    axes[1].set_xlabel('Confidence')
-    axes[1].set_ylabel('Frequency')
-
-    plt.tight_layout()
-    plt.savefig('distributions.png', dpi=150)
-    print("Saved: distributions.png")
-
 def main():
     """Main analysis workflow."""
     print(f"Fetching data for {STRATEGY_NAME}...")
-    df = fetch_indicator_data(START_TIME, END_TIME)
+
+    # Run async fetch
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    df = loop.run_until_complete(fetch_indicator_data())
+    loop.close()
 
     print(f"Loaded {len(df)} bars")
 
     # Generate plots
-    plot_indicator_signals(df)
-    analyze_signal_distribution(df)
-
-    print("\nAnalysis complete!")
+    if len(df) > 0:
+        plot_indicator_signals(df)
+        print("\nAnalysis complete!")
+    else:
+        print("No data to visualize")
 
 if __name__ == "__main__":
     main()
