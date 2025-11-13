@@ -26,7 +26,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "env": {
-                "PYTHONPATH": "/home/wolverine/bin/running"
+                "PYTHONPATH": "/home/wolverine/bin/running:${env:PYTHONPATH}"
             }
         },
         {
@@ -128,6 +128,92 @@
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "Captain - Quick Test (7 days)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/wolverine/bin/running/calculator3_test.py",
+            "args": [
+                "--testcase", "${workspaceFolder}/Trinity_Phase-2/",
+                "--algoname", "TrinityCaptain",
+                "--sourcefile", "WOS_Captain.py",
+                "--start", "20241025000000",
+                "--end", "20241101000000",
+                "--granularity", "900",
+                "--tm", "wss://10.99.100.116:4433/tm",
+                "--tm-master", "10.99.100.116:6102",
+                "--rails", "https://10.99.100.116:4433/private-api/",
+                "--token", "58abd12edbde042536637bfba9d20d5faf366ef481651cdbb046b1c3b4f7bf7a97ae7a2e6e5dc8fe05cd91147c8906f8a82aaa1bb1356d8cb3d6a076eadf5b5a",
+                "--category", "1",
+                "--is-managed", "1",
+                "--restore-length", "864000000",
+                "--multiproc", "1"
+            ],
+            "cwd": "${workspaceFolder}/Trinity_Phase-2",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "/home/wolverine/bin/running:${env:PYTHONPATH}"
+            }
+        },
+        {
+            "name": "Captain - Full Backtest (1 year)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/wolverine/bin/running/calculator3_test.py",
+            "args": [
+                "--testcase", "${workspaceFolder}/Trinity_Phase-2/",
+                "--algoname", "TrinityCaptain",
+                "--sourcefile", "WOS_Captain.py",
+                "--start", "20240101000000",
+                "--end", "20241231235959",
+                "--granularity", "900",
+                "--tm", "wss://10.99.100.116:4433/tm",
+                "--tm-master", "10.99.100.116:6102",
+                "--rails", "https://10.99.100.116:4433/private-api/",
+                "--token", "58abd12edbde042536637bfba9d20d5faf366ef481651cdbb046b1c3b4f7bf7a97ae7a2e6e5dc8fe05cd91147c8906f8a82aaa1bb1356d8cb3d6a076eadf5b5a",
+                "--category", "1",
+                "--is-managed", "1",
+                "--restore-length", "864000000",
+                "--multiproc", "1"
+            ],
+            "cwd": "${workspaceFolder}/Trinity_Phase-2",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "/home/wolverine/bin/running:${env:PYTHONPATH}"
+            }
+        },
+        {
+            "name": "Captain - Multi-Year (3 years)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/wolverine/bin/running/calculator3_test.py",
+            "args": [
+                "--testcase", "${workspaceFolder}/Trinity_Phase-2/",
+                "--algoname", "TrinityCaptain",
+                "--sourcefile", "WOS_Captain.py",
+                "--start", "20220101000000",
+                "--end", "20241231235959",
+                "--granularity", "900",
+                "--tm", "wss://10.99.100.116:4433/tm",
+                "--tm-master", "10.99.100.116:6102",
+                "--rails", "https://10.99.100.116:4433/private-api/",
+                "--token", "58abd12edbde042536637bfba9d20d5faf366ef481651cdbb046b1c3b4f7bf7a97ae7a2e6e5dc8fe05cd91147c8906f8a82aaa1bb1356d8cb3d6a076eadf5b5a",
+                "--category", "1",
+                "--is-managed", "1",
+                "--restore-length", "864000000",
+                "--multiproc", "1"
+            ],
+            "cwd": "${workspaceFolder}/Trinity_Phase-2",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "/home/wolverine/bin/running:${env:PYTHONPATH}"
+            }
         }
     ]
 }

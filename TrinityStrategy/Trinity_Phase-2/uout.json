@@ -1,0 +1,141 @@
+{
+  "private": {
+    "markets": [
+      "DCE"
+    ],
+    "security_categories": [
+      [
+        1,
+        2,
+        3
+      ]
+    ],
+    "securities": [
+      [
+        "COMPOSITE"
+      ]
+    ],
+    "sample_granularities": {
+      "type": "min",
+      "cycles": [
+        900
+      ],
+      "cycle_lengths": [
+        0
+      ]
+    },
+    "export": {
+      "XXX": {
+        "fields": [
+          "_preserved_field",
+          "bar_index",
+          "pv",
+          "nv",
+          "cash",
+          "active_positions",
+          "river_trades",
+          "lake_trades",
+          "dead_zone_count",
+          "peak_nv",
+          "drawdown",
+          "portfolio_dd_events",
+          "basket_dd_events"
+        ],
+        "defs": [
+          {
+            "field_type": "int64",
+            "display_name": "Preserved Field",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Bar Index",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Portfolio Value",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Net Value",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Cash",
+            "precision": 2,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Active Positions",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "River Trades",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Lake Trades",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Dead Zone Count",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Peak Net Value",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "double",
+            "display_name": "Drawdown",
+            "precision": 4,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Portfolio DD Events",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          },
+          {
+            "field_type": "integer",
+            "display_name": "Basket DD Events",
+            "precision": 0,
+            "sample_type": 0,
+            "multiple": 1
+          }
+        ],
+        "revision": -1
+      }
+    }
+  }
+}

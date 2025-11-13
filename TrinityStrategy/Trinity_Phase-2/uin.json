@@ -1,0 +1,34 @@
+{
+  "global": {
+    "imports": {
+      "SampleQuote": {
+        "fields": ["open", "high", "low", "close", "volume", "turnover"],
+        "granularities": [900],
+        "revision": 4294967295,
+        "markets": ["DCE", "SHFE", "CZCE"],
+        "security_categories": [[1, 2, 3], [1, 2, 3], [1, 2, 3]],
+        "securities": [
+          ["i", "j", "m", "y"],
+          ["cu", "sc", "al", "rb", "au", "ru"],
+          ["TA", "MA"]
+        ]
+      }
+    }
+  },
+  "private": {
+    "imports": {
+      "TrinityStrategy": {
+        "fields": ["_preserved_field", "bar_index", "adx_value", "di_plus", "di_minus", "upper_band", "middle_band", "lower_band", "conviction_oscillator"],
+        "granularities": [900],
+        "revision": 4294967295,
+        "markets": ["DCE", "SHFE", "CZCE"],
+        "security_categories": [[1, 2, 3], [1, 2, 3], [1, 2, 3]],
+        "securities": [
+          ["i", "j", "m", "y"],
+          ["cu", "sc", "al", "rb", "au", "ru"],
+          ["TA", "MA"]
+        ]
+      }
+    }
+  }
+}

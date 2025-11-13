@@ -421,11 +421,103 @@ if volume < 0.001:  # Skip zero volume bars
 
 ### Phase 2 (Captain Strategy)
 
+**Status**: ✅ IMPLEMENTED
+
 Once Phase 1 is validated:
 1. Create `WOS_CaptainStrategy` class (Tier 2)
 2. Import Trinity Scout outputs
 3. Implement regime-adaptive logic (trinity-strategy.md § 4)
 4. Generate final trading signals
+
+## Phase 2: Captain Strategy (Tier-2 Fund Manager)
+
+### Overview
+Tier-2 composite strategy that aggregates Tier-1 Scout signals into regime-adaptive trading decisions with risk parity sizing and drawdown protection.
+
+### Files
+- **WOS_Captain.py**: Main composite strategy (12 baskets, ~600 lines)
+- **trinity_playbook.py**: Tuned parameters from Phase 1.5 optimization
+- **captain_uin.json**: Dual imports (SampleQuote + TrinityStrategy)
+- **captain_uout.json**: Portfolio metrics exports (13 fields)
+- **WOS_Captain_viz.ipynb**: Jupyter visualization notebook
+
+### Architecture
+
+**12 Baskets**: One per commodity (i, j, m, y, cu, sc, al, rb, au, ru, TA, MA)
+- Each basket trades independently with its own capital allocation
+- Risk parity sizing: volatility-normalized position sizes
+- Example: Gold (Au) size=5.38 (low vol), Copper (Cu) size=0.03 (high vol)
+
+**Two Parsers**:
+- **SampleQuote** (global namespace): OHLCV data for close price
+- **ScoutParser** (private namespace): Tier-1 indicator outputs (ADX, bands, conviction)
+
+**Regime Logic**:
+- **RIVER Mode** (ADX > threshold): Trend-following, hold overnight for big moves
+- **LAKE Mode** (ADX < threshold): Mean-reversion, **INTRADAY ONLY** (exit at 14:55)
+- **DEAD ZONE** (ADX between thresholds): Flat, avoid whipsaws
+
+**Risk Management**:
+- **Portfolio DD Limits**: -10% (reduce size 50%), -20% (flatten all)
+- **Per-Basket DD Limit**: -15% (close basket)
+- Tracks peak values and enforces limits automatically
+
+**MANDATORY Callbacks** (CRITICAL for basket operation):
+- `on_reference()`: Populates basket.target_instrument for market data routing
+- `on_tradeday_begin()`: Triggers contract rolling (i2501 → i2505 at expiry)
+- `on_tradeday_end()`: End-of-day settlement
+
+### Running Captain
+
+**Quick Test (7 days)**:
+1. Press F5 in VS Code
+2. Select: **"Captain - Quick Test (7 days)"**
+3. Verify logs show:
+   - All 12 baskets receiving data (basket.price != 0)
+   - Regime switches (RIVER/LAKE/DEAD)
+   - Trades executed with correct leverage
+   - Lake positions exiting at 14:55
+4. Wait for "ON FINISHED" → Stop with **Shift+F5**
+
+**Visualization**:
+1. Open `WOS_Captain_viz.ipynb`
+2. Run all cells
+3. Review:
+   - P&L curve (PV + NV)
+   - Drawdown analysis
+   - Regime distribution (pie chart)
+   - Performance statistics
+
+**Full Backtest (1 year)**:
+1. Select: **"Captain - Full Backtest (1 year)"**
+2. Generate comprehensive analysis
+3. Analyze P&L, drawdown, per-basket performance
+
+### Success Criteria
+
+✅ **Backtest Completes**: No errors, all 12 baskets trading
+✅ **Positive P&L**: Cumulative returns > 0
+✅ **Controlled Drawdown**: Max DD < 15% (with limits)
+✅ **Regime Adaptation**: Different behavior in River vs Lake modes
+✅ **Risk Parity**: Wild commodities trade smaller, stable commodities trade larger
+✅ **Intraday Discipline**: Lake positions exit before close
+✅ **Drawdown Limits**: Portfolio/basket limits trigger correctly
+
+### Expected Performance
+
+- **Annual Return**: 15-30% (target: 25%)
+- **Sharpe Ratio**: 1.5-2.5 (target: 2.0)
+- **Max Drawdown**: 8-15% (target: 10%)
+- **Win Rate**: 45-55%
+- **Profit Factor**: 1.5-2.0
+
+### Documentation
+
+See `docs/Phase-2-Captain-Implementation.md` for complete technical details (68KB, 2,153 lines):
+- Why 12 baskets? (automatic routing, P&L tracking, contract rolling)
+- Why two parsers? (need both OHLCV and Scout data)
+- Why intraday-only Lake mode? (avoid overnight gap risk in ranging markets)
+- Complete architecture, testing workflow, troubleshooting guide
 
 ## Resources
 
