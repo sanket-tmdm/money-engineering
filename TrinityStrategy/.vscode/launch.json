@@ -100,6 +100,34 @@
             "env": {
                 "PYTHONPATH": "/home/wolverine/bin/running:${env:PYTHONPATH}"
             }
+        },
+        {
+            "name": "TrinityStrategy - Parameter Tuning (Quick Test)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tune_parameters.py",
+            "args": [
+                "--start", "20241025000000",
+                "--end", "20241101000000",
+                "--output", "trinity_parameters_quicktest.json"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "TrinityStrategy - Parameter Tuning (Full Year 2024)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tune_parameters.py",
+            "args": [
+                "--start", "20240101000000",
+                "--end", "20241231000000",
+                "--output", "trinity_parameters.json"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }

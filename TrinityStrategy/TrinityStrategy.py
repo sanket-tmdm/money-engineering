@@ -564,10 +564,25 @@ class TrinityMultiCommodityManager:
     """
     Top-level manager for all commodities
 
-    Creates and manages Trinity Scouts for multiple commodities:
-    - Iron Ore (DCE:i) - Trending market
-    - Copper (SHFE:cu) - Ranging market
-    - Crude Oil (SHFE:sc) - Volatile/Wild card market
+    Creates and manages Trinity Scouts for 12 commodities across 3 markets:
+
+    DCE (Dalian):
+    - Iron Ore (i) - Trending metal
+    - Coking Coal (j) - Energy/industrial
+    - Soybean Meal (m) - Agriculture
+    - Soybean Oil (y) - Agriculture/softs
+
+    SHFE (Shanghai):
+    - Copper (cu) - Ranging metal
+    - Crude Oil (sc) - Volatile energy
+    - Aluminum (al) - Base metal
+    - Rebar (rb) - Construction steel
+    - Gold (au) - Precious metal/safe haven
+    - Rubber (ru) - Industrial commodity
+
+    CZCE (Zhengzhou):
+    - PTA (TA) - Chemicals/petrochemicals
+    - Methanol (MA) - Chemicals/energy
 
     Routes bars to appropriate commodity managers.
     """
@@ -575,9 +590,23 @@ class TrinityMultiCommodityManager:
     def __init__(self):
         # Create manager for each commodity
         self.managers = {
+            # DCE instruments (Dalian Commodity Exchange)
             (b'DCE', b'i'): TrinityCommodityManager(b'DCE', b'i'),
+            (b'DCE', b'j'): TrinityCommodityManager(b'DCE', b'j'),
+            (b'DCE', b'm'): TrinityCommodityManager(b'DCE', b'm'),
+            (b'DCE', b'y'): TrinityCommodityManager(b'DCE', b'y'),
+
+            # SHFE instruments (Shanghai Futures Exchange)
             (b'SHFE', b'cu'): TrinityCommodityManager(b'SHFE', b'cu'),
             (b'SHFE', b'sc'): TrinityCommodityManager(b'SHFE', b'sc'),
+            (b'SHFE', b'al'): TrinityCommodityManager(b'SHFE', b'al'),
+            (b'SHFE', b'rb'): TrinityCommodityManager(b'SHFE', b'rb'),
+            (b'SHFE', b'au'): TrinityCommodityManager(b'SHFE', b'au'),
+            (b'SHFE', b'ru'): TrinityCommodityManager(b'SHFE', b'ru'),
+
+            # CZCE instruments (Zhengzhou Commodity Exchange) - UPPERCASE!
+            (b'CZCE', b'TA'): TrinityCommodityManager(b'CZCE', b'TA'),
+            (b'CZCE', b'MA'): TrinityCommodityManager(b'CZCE', b'MA'),
         }
 
         logger.info(f"Initialized TrinityMultiCommodityManager with {len(self.managers)} commodities")

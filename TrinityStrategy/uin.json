@@ -16,9 +16,15 @@
         "revision": 4294967295,
         "markets": [
           "DCE",
-          "SHFE"
+          "SHFE",
+          "CZCE"
         ],
         "security_categories": [
+          [
+            1,
+            2,
+            3
+          ],
           [
             1,
             2,
@@ -32,11 +38,22 @@
         ],
         "securities": [
           [
-            "i"
+            "i",
+            "j",
+            "m",
+            "y"
           ],
           [
             "cu",
-            "sc"
+            "sc",
+            "al",
+            "rb",
+            "au",
+            "ru"
+          ],
+          [
+            "TA",
+            "MA"
           ]
         ]
       }
