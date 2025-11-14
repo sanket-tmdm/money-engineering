@@ -1,9 +1,21 @@
 {
   "private": {
     "markets": [
-      "DCE"
+      "DCE",
+      "SHFE",
+      "CZCE"
     ],
     "security_categories": [
+      [
+        1,
+        2,
+        3
+      ],
+      [
+        1,
+        2,
+        3
+      ],
       [
         1,
         2,
@@ -12,7 +24,22 @@
     ],
     "securities": [
       [
-        "COMPOSITE"
+        "i",
+        "j",
+        "m",
+        "y"
+      ],
+      [
+        "cu",
+        "sc",
+        "al",
+        "rb",
+        "au",
+        "ru"
+      ],
+      [
+        "TA",
+        "MA"
       ]
     ],
     "sample_granularities": {

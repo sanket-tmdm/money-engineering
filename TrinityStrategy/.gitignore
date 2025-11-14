@@ -1,2 +1,41 @@
+# Environment variables
 .env
+
+# Project instructions (personal)
 CLAUDE.md
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Profiling logs
+*.profile.log
+
+# Worker logs and temporary files
+.workers/
+*.log
+
+# Generated visualization outputs (regenerable from data)
+*_drawdown_*.png
+*_pnl_*.png
+*_regimes_*.png
+*_summary_*.txt
+*_distributions_*.png
+*_correlation_*.png
+*_scouts_*.png
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+
+# Test artifacts
+*.profile
+*.prof

@@ -318,14 +318,251 @@ data = fetch_strategy_data(
 
 ---
 
-## Status Summary
 
-**Current State**: UNRESOLVED
-**Blocker**: Unknown data export or retrieval issue
-**Workaround**: Manual log analysis
-**Priority**: HIGH - visualization is essential for validation
-**Owner**: Needs WOS developer investigation
+
+## RESOLUTION FOUND ✅
+
+**Date**: November 13-14, 2025
+**Investigation Time**: ~3 hours
+**Root Cause**: Array length mismatch in uout.json configuration
 
 ---
 
-**Next**: [summary-for-developer.md](./summary-for-developer.md)
+## ⚠️ CORRECTION: Previous Analysis Was Incorrect
+
+The initial investigation (documented above) incorrectly concluded that the issue was:
+1. ❌ Missing `ready_to_serialize()` method (WRONG)
+2. ❌ Contract code mismatch with `<00>` suffix (WRONG)
+
+**These were red herrings.** The backtest was actually failing BEFORE serialization with a different error.
+
+---
+
+## THE ACTUAL ROOT CAUSE: Array Structure Mismatch
+
+**Error seen during backtest** (November 14, 2025):
+```
+Exception: self.fields is empty or self.meta_id is None or self.market is None
+or self.code is None or self.granularity is None or self.timetag is None
+or self.namespace is None
+
+at WOS_Captain.py:195 in on_bar() when calling self.sv_copy()
+at pycaitlynts3.py:346 in to_sv() when checking ready_to_serialize()
+```
+
+**This error occurred DURING the backtest**, not during data retrieval. The backtest was crashing when trying to serialize output at cycle boundaries.
+
+### Why `ready_to_serialize()` Failed
+
+The framework's `ready_to_serialize()` check (pycaitlynts3.py:319-326):
+```python
+def ready_to_serialize(self):
+    return not (self.sv.size() == 0 or      # ← self.fields is empty
+                self.meta_id is None or      # ← Not initialized
+                self.market is None or
+                ...)
+```
+
+Both `self.meta_id` and `self.fields` were `None`/empty because `load_def_from_dict()` couldn't find matching metadata in the `metas` dict.
+
+### The Configuration Bug
+
+**Trinity_Phase-2/uin.json** (CORRECT - 3 markets):
+```json
+{
+  "global": {
+    "imports": {
+      "SampleQuote": {
+        "markets": ["DCE", "SHFE", "CZCE"],
+        "security_categories": [[1,2,3], [1,2,3], [1,2,3]],
+        "securities": [
+          ["i", "j", "m", "y"],
+          ["cu", "sc", "al", "rb", "au", "ru"],
+          ["TA", "MA"]
+        ]
+      }
+    }
+  },
+  "private": {
+    "imports": {
+      "TrinityStrategy": {
+        "markets": ["DCE", "SHFE", "CZCE"],
+        "security_categories": [[1,2,3], [1,2,3], [1,2,3]],
+        "securities": [
+          ["i", "j", "m", "y"],
+          ["cu", "sc", "al", "rb", "au", "ru"],
+          ["TA", "MA"]
+        ]
+      }
+    }
+  }
+}
+```
+
+**Trinity_Phase-2/uout.json BEFORE FIX** (BROKEN - 1 market):
+```json
+{
+  "private": {
+    "markets": ["DCE"],                      // ❌ Only 1 market
+    "security_categories": [[1, 2, 3]],      // ❌ Only 1 category array
+    "securities": [["COMPOSITE"]]            // ❌ Only 1 security array
+  }
+}
+```
+
+**Trinity_Phase-2/uout.json AFTER FIX** (CORRECT - 3 markets):
+```json
+{
+  "private": {
+    "markets": ["DCE", "SHFE", "CZCE"],      // ✅ 3 markets
+    "security_categories": [                  // ✅ 3 category arrays
+      [1, 2, 3],
+      [1, 2, 3],
+      [1, 2, 3]
+    ],
+    "securities": [                           // ✅ 3 security arrays
+      ["i", "j", "m", "y"],
+      ["cu", "sc", "al", "rb", "au", "ru"],
+      ["TA", "MA"]
+    ]
+  }
+}
+```
+
+---
+
+## Why This Mismatch Broke Everything
+
+Per WOS documentation (`wos/02-uin-and-uout.md:666`):
+> **CRITICAL**: Array lengths MUST match between uin.json and uout.json
+
+When the framework initializes:
+
+1. **Parses uin.json and uout.json** to build metadata schema
+2. **Expects matching array structures** for:
+   - `markets`
+   - `security_categories`
+   - `securities`
+3. **Mismatch detected** → framework can't build coherent schema
+4. **`on_init()` calls `strategy.load_def_from_dict(metas)`**
+5. **`load_def_from_dict()` searches for `(namespace, meta_name, revision)` match**
+6. **Can't find matching metadata** due to structural incompatibility
+7. **`load_def()` never called** → `self.meta_id` stays `None`, `self.fields` stays empty
+8. **Later in `on_bar()`**: cycle boundary → `sv_copy()` → `ready_to_serialize()` → **EXCEPTION**
+
+---
+
+## The Fix (Actually Applied)
+
+**Changed**: `Trinity_Phase-2/uout.json` lines 3-43
+
+Updated the market/securities structure to match uin.json:
+
+```json
+{
+  "private": {
+    "markets": [
+      "DCE",
+      "SHFE",
+      "CZCE"
+    ],
+    "security_categories": [
+      [1, 2, 3],
+      [1, 2, 3],
+      [1, 2, 3]
+    ],
+    "securities": [
+      ["i", "j", "m", "y"],
+      ["cu", "sc", "al", "rb", "au", "ru"],
+      ["TA", "MA"]
+    ]
+  }
+}
+```
+
+**Result**:
+- ✅ Framework can now match import/export schemas
+- ✅ `load_def_from_dict()` finds the metadata
+- ✅ `self.meta_id` and `self.fields` get initialized properly
+- ✅ `ready_to_serialize()` returns `True`
+- ✅ `sv_copy()` succeeds → data uploaded to server
+- ✅ Visualization retrieves data successfully
+
+---
+
+## No Code Changes Needed
+
+`WOS_Captain.py` was already correct:
+- Line 144: `self.market = b'DCE'` ✅
+- Line 145: `self.code = b'COMPOSITE'` ✅
+- Line 142: `self.namespace = pc.namespace_private` ✅
+
+The COMPOSITE data is stored as `DCE/COMPOSITE` in the private namespace - this works fine with the new 3-market structure.
+
+---
+
+## Verification
+
+After applying the uout.json fix:
+
+1. ✅ **Backtest completed** without serialization errors
+2. ✅ **Data uploaded** to server successfully
+3. ✅ **Visualization script** fetched data
+4. ✅ **All 12 baskets** trading correctly
+
+---
+
+## Why This Was So Hard to Diagnose
+
+1. ❌ **Misleading initial symptom**: "Fetched 0 bars" suggested data retrieval issue, not serialization crash
+2. ❌ **Silent config validation**: Framework doesn't warn about array length mismatches
+3. ❌ **Generic error message**: "self.fields is empty" doesn't mention config mismatch
+4. ❌ **Documentation buried**: Array matching requirement in wos/02 but not emphasized for multi-market configs
+5. ✅ **Solution found by comparison**: User compared working Phase-1 vs broken Phase-2 uout.json
+
+---
+
+## Lessons Learned
+
+### CRITICAL Framework Rule (Not Well Documented)
+
+**When using multi-market imports in `uin.json`:**
+> The `uout.json` MUST have matching array structures for `markets`, `security_categories`, and `securities`
+
+**This applies even if:**
+- You're only exporting ONE composite security
+- That security aggregates data from all markets
+- The export doesn't actually need all markets
+
+**The framework requires structural consistency** for schema initialization.
+
+### Comparison Is Key
+
+When debugging framework issues:
+1. ✅ Find a **working example** (TrinityStrategy Phase-1)
+2. ✅ **Compare configurations** side-by-side (uin.json + uout.json)
+3. ✅ Look for **structural differences**, not just content
+
+### Documentation Gap
+
+`wos/02-uin-and-uout.md:666` mentions array matching but:
+- ❌ Doesn't emphasize this applies to **multi-market configurations**
+- ❌ Doesn't show example of composite strategy aggregating multiple markets
+- ❌ Doesn't explain the **serialization failure mode** that results
+
+---
+
+## Status Summary
+
+**Date Fixed**: November 14, 2025
+**Root Cause**: Array length mismatch in uout.json (1 market vs 3 markets in uin.json)
+**Fix Applied**: Updated uout.json to match 3-market structure from uin.json
+**Complexity**: Trivial (JSON config change)
+**Time to Resolution**: ~3 hours (including false leads)
+**Lesson Value**: HIGH - critical framework requirement not obvious from documentation
+
+---
+
+**Status**: ✅ FULLY RESOLVED
+**Next**: Phase-2 backtest and visualization now working. Ready for parameter tuning and performance analysis.
+---
